@@ -1,4 +1,5 @@
 build/*
+dist/
 tests/
 
 # Machine-local build helpers (aqt Qt + local zlib instead of vcpkg)

@@ -19,6 +19,7 @@
 #include <QPixmap>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QSizePolicy>
 #include <QSpinBox>
 #include <QStyle>
 #include <QStyleOptionButton>
@@ -451,6 +452,24 @@ PropertyPanel::PropertyPanel(EditorState *state, QWidget *parent)
     layout->addRow(dragLabel(QStringLiteral("Scale Y"), QStringLiteral("ToolbarScale.xpm"), QStringLiteral("scaleY"), scaleY_), scaleY_);
     layout->addRow(dragLabel(QStringLiteral("Rotation"), QStringLiteral("ToolbarRotate.xpm"), QStringLiteral("rotation"), rotation_), rotation_);
     layout->addRow(dragLabel(QStringLiteral("Skew"), QStringLiteral("ToolbarSkew.xpm"), QStringLiteral("skew"), skew_), skew_);
+
+    // Flip buttons (mirror the selection about its centre), Illustrator-style.
+    auto *flipRow = new QWidget(this);
+    auto *flipLayout = new QHBoxLayout(flipRow);
+    flipLayout->setContentsMargins(0, 0, 0, 0);
+    flipLayout->setSpacing(6);
+    auto *flipHButton = new QPushButton(QStringLiteral("Flip Horizontal"), flipRow);
+    flipHButton->setToolTip(QStringLiteral("Flip the selection horizontally"));
+    flipHButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    auto *flipVButton = new QPushButton(QStringLiteral("Flip Vertical"), flipRow);
+    flipVButton->setToolTip(QStringLiteral("Flip the selection vertically"));
+    flipVButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    flipLayout->addWidget(flipHButton);
+    flipLayout->addWidget(flipVButton);
+    connect(flipHButton, &QPushButton::clicked, this, [this]() { if (flipCallback_) { flipCallback_(true); } });
+    connect(flipVButton, &QPushButton::clicked, this, [this]() { if (flipCallback_) { flipCallback_(false); } });
+    layout->addRow(propertyLabel(this, QStringLiteral("Flip"), QStringLiteral("ToolbarScale.xpm")), flipRow);
+
     layout->addRow(dragLabel(QStringLiteral("Opacity"), QStringLiteral("PropertyVisible.xpm"), QStringLiteral("opacity"), opacity_), opacity_);
     layout->addRow(propertyLabel(this, QStringLiteral("Color"), QStringLiteral("PropertyColor.xpm")), colorButton_);
     layout->addRow(propertyLabel(this, QStringLiteral("Visible"), QStringLiteral("PropertyVisible.xpm")), visible_);
@@ -476,6 +495,42 @@ void PropertyPanel::setDebugVisible(bool visible)
 void PropertyPanel::setSpriteSizeFn(std::function<QSizeF(int)> fn)
 {
     spriteSizeFn_ = std::move(fn);
+}
+
+void PropertyPanel::setFlipCallback(std::function<void(bool)> fn)
+{
+    flipCallback_ = std::move(fn);
+}
+
+void PropertyPanel::syncTransformValues()
+{
+    // Re-resolve from the editor state (a canvas drag may have detached the
+    // project's layer buffer, invalidating cached pointers). Only single-item
+    // selections have absolute transform fields; a group/multi selection uses a
+    // relative box proxy that has nothing to live-update.
+    if (state_ == nullptr || loading_ || valueLabelDragging_ || valueLabelBoxDrag_) {
+        return;
+    }
+    const QVector<fh6::ShapeLayer *> layers = state_->selectedLayers();
+    const QVector<fh6::GuideLayer *> guides = state_->selectedGuideLayers();
+    loading_ = true;
+    if (guides.isEmpty() && layers.size() == 1) {
+        const fh6::ShapeLayer *layer = layers.front();
+        x_->setValue(layer->x);
+        y_->setValue(layer->y);
+        scaleX_->setValue(layer->scaleX);
+        scaleY_->setValue(layer->scaleY);
+        rotation_->setValue(layer->rotation);
+        skew_->setValue(layer->skew);
+    } else if (layers.isEmpty() && guides.size() == 1) {
+        const fh6::GuideLayer *guide = guides.front();
+        x_->setValue(guide->x);
+        y_->setValue(guide->y);
+        scaleX_->setValue(guide->scaleX);
+        scaleY_->setValue(guide->scaleY);
+        rotation_->setValue(guide->rotation);
+    }
+    loading_ = false;
 }
 
 std::array<int, 3> PropertyPanel::flagCheckStates() const

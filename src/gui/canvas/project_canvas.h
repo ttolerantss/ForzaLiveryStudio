@@ -18,6 +18,7 @@
 #include <QTimer>
 #include <QTransform>
 
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -61,6 +62,12 @@ public:
     bool moveToolAutoSelect() const;
     void setSelectionFlashEnabled(bool enabled);
     bool selectionFlashEnabled() const;
+    // Mirror the current selection about its centre: horizontal = left/right,
+    // otherwise top/bottom. A whole group mirrors as a unit.
+    void flipSelection(bool horizontal);
+    // Called whenever a canvas transform drag mutates the selection (live and on
+    // finish), so the property panel can refresh its transform fields.
+    void setTransformChangedCallback(std::function<void()> fn);
 
 protected:
     void initializeGL() override;
@@ -234,6 +241,7 @@ private:
     // Relative transform mode: the selection box follows the shape/group orientation.
     bool transformRelativeMode_ = false;
     bool moveToolAutoSelect_ = false;
+    std::function<void()> transformChangedCallback_;
     // Set on a Select-tool press that landed on the current selection's transform
     // box (a handle, rotate zone, or a selected shape); tells SelectTool::beginDrag
     // to grab a transform handle rather than force a plain move.

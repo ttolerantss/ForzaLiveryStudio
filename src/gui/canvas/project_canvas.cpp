@@ -644,8 +644,8 @@ QString ProjectCanvas::guideAtScreenPoint(const QPointF &point)
     updateViewTransform();
     for (int index = project_->guideLayers.size() - 1; index >= 0; --index) {
         const fh6::GuideLayer &guide = project_->guideLayers[index];
-        if (!guide.visible) {
-            continue;
+        if (!guide.visible || guide.locked) {
+            continue;  // a locked guide is a passive backdrop: never picked
         }
         const QPolygonF polygon = guideScreenPolygon(guide);
         if (polygon.boundingRect().contains(point) && pointInPolygon(point, polygon)) {
@@ -1144,6 +1144,68 @@ void ProjectCanvas::cycleFlipSelection()
     update();
 }
 
+void ProjectCanvas::setTransformChangedCallback(std::function<void()> fn)
+{
+    transformChangedCallback_ = std::move(fn);
+}
+
+// Explicit one-shot mirror of the selection about its combined centre.
+// horizontal = left/right (mirror x positions), otherwise top/bottom (mirror y).
+// Uses the same rotate-complement + scale-sign decomposition as cycleFlipSelection.
+void ProjectCanvas::flipSelection(bool horizontal)
+{
+    if (state_ == nullptr || project_ == nullptr) {
+        return;
+    }
+    QVector<fh6::ShapeLayer *> layers = selectedLayers();
+    QVector<fh6::GuideLayer *> guides = selectedGuideLayers();
+    if (layers.isEmpty() && guides.isEmpty()) {
+        return;
+    }
+
+    const QPointF center = selectedWorldBounds().center();
+    const auto complementRotation = [](double rotation) {
+        return normalizeRotation(180.0 - rotation);
+    };
+
+    state_->beginTransformCommand();
+    // Detach from the undo snapshot before mutating through resolved pointers.
+    project_->layers.data();
+    project_->guideLayers.data();
+    layers = selectedLayers();
+    guides = selectedGuideLayers();
+
+    for (fh6::ShapeLayer *layer : layers) {
+        if (horizontal) {
+            layer->x = 2.0 * center.x() - layer->x;
+            layer->scaleY = -layer->scaleY;
+            layer->skew = -layer->skew;
+            layer->rotation = complementRotation(layer->rotation);
+        } else {
+            layer->y = 2.0 * center.y() - layer->y;
+            layer->scaleX = -layer->scaleX;
+            layer->skew = -layer->skew;
+            layer->rotation = complementRotation(layer->rotation);
+        }
+    }
+    for (fh6::GuideLayer *guide : guides) {
+        if (horizontal) {
+            guide->x = 2.0 * center.x() - guide->x;
+            guide->scaleY = -guide->scaleY;
+            guide->rotation = complementRotation(guide->rotation);
+        } else {
+            guide->y = 2.0 * center.y() - guide->y;
+            guide->scaleX = -guide->scaleX;
+            guide->rotation = complementRotation(guide->rotation);
+        }
+    }
+
+    state_->commitTransformCommand();
+    state_->noteProjectGeometryChanged();
+    invalidateSceneCache();
+    update();
+}
+
 QVector<fh6::ShapeLayer *> ProjectCanvas::selectedLayers() const
 {
     if (state_ == nullptr) {
@@ -1557,6 +1619,9 @@ void ProjectCanvas::finishDrag()
             state_->noteProjectStructureChanged();
         } else {
             state_->noteProjectGeometryChanged();
+        }
+        if (transformChangedCallback_) {
+            transformChangedCallback_();
         }
     }
     resetDragState();
@@ -2013,7 +2078,7 @@ void ProjectCanvas::selectByMarquee(Qt::KeyboardModifiers modifiers)
     if (state_ != nullptr) {
         QSet<QString> guideIds;
         for (const fh6::GuideLayer &guide : project_->guideLayers) {
-            if (!guide.visible) {
+            if (!guide.visible || guide.locked) {
                 continue;
             }
             const QRectF bounds = guideScreenPolygon(guide).boundingRect();
@@ -2467,21 +2532,25 @@ void ProjectCanvas::mouseMoveEvent(QMouseEvent *event)
     }
     if (dragMode_ == DragMode::Move || dragMode_ == DragMode::TransformMove) {
         applyMoveDrag(event->position(), event->modifiers());
+        if (transformChangedCallback_) { transformChangedCallback_(); }
         event->accept();
         return;
     }
     if (dragMode_ == DragMode::Scale) {
         applyScaleDrag(event->position(), event->modifiers());
+        if (transformChangedCallback_) { transformChangedCallback_(); }
         event->accept();
         return;
     }
     if (dragMode_ == DragMode::Skew) {
         applySkewDrag(event->position());
+        if (transformChangedCallback_) { transformChangedCallback_(); }
         event->accept();
         return;
     }
     if (dragMode_ == DragMode::Rotate) {
         applyRotateDrag(event->position(), event->modifiers());
+        if (transformChangedCallback_) { transformChangedCallback_(); }
         event->accept();
         return;
     }

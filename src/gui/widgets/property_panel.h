@@ -38,6 +38,11 @@ public:
     // pivot about the selection's true visual bounding box. Optional: without it
     // the pivot falls back to the bounding box of item positions.
     void setSpriteSizeFn(std::function<QSizeF(int)> fn);
+    // Invoked by the Flip H / Flip V buttons; horizontal = left/right.
+    void setFlipCallback(std::function<void(bool horizontal)> fn);
+    // Live-refresh the transform fields (x/y/scale/rotation/skew) from the current
+    // single-item selection, e.g. while it is being dragged/scaled on the canvas.
+    void syncTransformValues();
 
     std::array<int, 3> flagCheckStates() const;
 
@@ -76,6 +81,7 @@ private:
 
     EditorState *state_ = nullptr;
     std::function<QSizeF(int)> spriteSizeFn_;
+    std::function<void(bool)> flipCallback_;
     QVector<fh6::ShapeLayer *> layers_;
     QVector<fh6::GuideLayer *> guides_;
     QVector<fh6::LayerGroup *> groups_;

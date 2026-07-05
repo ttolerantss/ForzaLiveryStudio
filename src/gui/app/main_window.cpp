@@ -316,6 +316,18 @@ void MainWindow::setupDocks()
     properties_->setSpriteSizeFn([this](int id) {
         return canvas_ != nullptr ? canvas_->shapeSize(id) : QSizeF(0.0, 0.0);
     });
+    properties_->setFlipCallback([this](bool horizontal) {
+        if (canvas_ != nullptr) {
+            canvas_->flipSelection(horizontal);
+        }
+    });
+    // Keep the property panel's transform fields in sync while dragging/scaling
+    // a shape on the canvas.
+    canvas_->setTransformChangedCallback([this]() {
+        if (properties_ != nullptr) {
+            properties_->syncTransformValues();
+        }
+    });
     applyBehaviorSettings(loadBehaviorSettings(), false);
     auto *propertiesDock = addPanelDock(QStringLiteral("Properties"), QStringLiteral("PropertiesDock"),
                                         QStringLiteral("WidgetProperties.xpm"), Qt::RightDockWidgetArea, properties_);
@@ -459,6 +471,13 @@ void MainWindow::setupEditMenu()
                  QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E), QStringLiteral("MenuFoldAllGroups.xpm"), &MainWindow::collapseAllGroups);
     addEditEntry(QStringLiteral("&Delete Selected"), QStringLiteral("delete_selected"), QStringLiteral("Delete Selected"),
                  QKeySequence(Qt::Key_Delete), QStringLiteral("MenuDelete.xpm"), &MainWindow::deleteSelectedLayers);
+    editMenu->addSeparator();
+    addEditEntry(QStringLiteral("Flip &Horizontal"), QStringLiteral("flip_horizontal"), QStringLiteral("Flip Horizontal"),
+                 QKeySequence(Qt::SHIFT | Qt::Key_H), QStringLiteral("ToolbarScale.xpm"),
+                 [this]() { if (canvas_ != nullptr) { canvas_->flipSelection(true); } });
+    addEditEntry(QStringLiteral("Flip &Vertical"), QStringLiteral("flip_vertical"), QStringLiteral("Flip Vertical"),
+                 QKeySequence(Qt::SHIFT | Qt::Key_V), QStringLiteral("ToolbarScale.xpm"),
+                 [this]() { if (canvas_ != nullptr) { canvas_->flipSelection(false); } });
     editMenu->addSeparator();
     addEditEntry(QStringLiteral("Stamp (Duplicate in Place)"), QStringLiteral("stamp"), QStringLiteral("Stamp"),
                  QKeySequence(Qt::Key_Y), QStringLiteral("MenuPaste.xpm"), &MainWindow::stampSelection);
@@ -1932,7 +1951,10 @@ bool MainWindow::importGuideLayer(const QString &path, QString *error)
     state_->commitProjectEdit();
     state_->noteProjectStructureChanged();
     if (canvas_ != nullptr) {
-        canvas_->setTool(QStringLiteral("transform"));
+        // Stay on the Select tool (which can also move/transform the freshly
+        // imported, already-selected guide) rather than forcing the Transform
+        // tool, so marquee and click-selection keep working after an import.
+        canvas_->setTool(QStringLiteral("select"));
         canvas_->setFocus();
     }
     statusBar()->showMessage(QStringLiteral("Added guide layer %1").arg(guide.name), 2500);

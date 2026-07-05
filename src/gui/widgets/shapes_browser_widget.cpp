@@ -22,13 +22,16 @@
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QEvent>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSettings>
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QSplitter>
 #include <QToolButton>
 #include <QTransform>
+#include <QWheelEvent>
 #include <QUuid>
 #include <QVBoxLayout>
 
@@ -848,13 +851,22 @@ ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
 
     scroll_ = new QScrollArea(splitter);
     scroll_->setWidgetResizable(true);
+    // Shapes wrap into a grid and scroll vertically, but the wheel jumps one full
+    // row at a time (see eventFilter) so a scroll always lands on a line boundary
+    // rather than stopping halfway between two lines.
+    scroll_->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scroll_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll_->setMinimumHeight(TileSize.height() + 16);
+    scroll_->verticalScrollBar()->setSingleStep(TileSize.height() + 8);
     gridHost_ = new QWidget(scroll_);
     grid_ = new QGridLayout(gridHost_);
-    grid_->setContentsMargins(8, 8, 8, 8);
+    grid_->setContentsMargins(8, 0, 8, 0);
     grid_->setHorizontalSpacing(8);
     grid_->setVerticalSpacing(8);
     grid_->setAlignment(Qt::AlignLeft | Qt::AlignTop);
     scroll_->setWidget(gridHost_);
+    // Snap the mouse wheel to whole rows so it jumps line-to-line.
+    scroll_->viewport()->installEventFilter(this);
     splitter->addWidget(scroll_);
     splitter->setStretchFactor(1, 1);
     installSplitterResizeCursor(splitter);
@@ -950,6 +962,28 @@ void ShapesBrowserWidget::resizeEvent(QResizeEvent *event)
 {
     QWidget::resizeEvent(event);
     refreshGrid();
+}
+
+bool ShapesBrowserWidget::eventFilter(QObject *watched, QEvent *event)
+{
+    // Scroll the shape grid one full row per wheel notch, snapped to a row
+    // boundary, so it jumps line-to-line instead of stopping between lines.
+    if (scroll_ != nullptr && watched == scroll_->viewport() && event->type() == QEvent::Wheel) {
+        auto *wheel = static_cast<QWheelEvent *>(event);
+        const int delta = wheel->angleDelta().y() != 0 ? wheel->angleDelta().y() : wheel->angleDelta().x();
+        if (delta != 0) {
+            const int rowStride = TileSize.height() + grid_->verticalSpacing();
+            QScrollBar *bar = scroll_->verticalScrollBar();
+            int target = bar->value() + (delta > 0 ? -rowStride : rowStride);
+            if (target < 0) {
+                target = 0;
+            }
+            const int snapped = (target + rowStride / 2) / rowStride * rowStride;
+            bar->setValue(snapped);
+            return true;
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 void ShapesBrowserWidget::populateCategories()
