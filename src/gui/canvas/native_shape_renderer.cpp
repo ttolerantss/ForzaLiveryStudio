@@ -269,7 +269,7 @@ void NativeShapeRenderer::render(
     functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
     functions->glDisable(GL_DEPTH_TEST);
     if (clearBackground) {
-        functions->glClearColor(24.0f / 255.0f, 25.0f / 255.0f, 28.0f / 255.0f, 1.0f);
+        functions->glClearColor(56.0f / 255.0f, 56.0f / 255.0f, 56.0f / 255.0f, 1.0f);   // #383838
         functions->glClear(GL_COLOR_BUFFER_BIT);
     }
 
@@ -388,7 +388,7 @@ void NativeShapeRenderer::compositeScene(QOpenGLFunctions *functions, const QSiz
 {
     functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
     if (clearBackground) {
-        functions->glClearColor(24.0f / 255.0f, 25.0f / 255.0f, 28.0f / 255.0f, 1.0f);
+        functions->glClearColor(56.0f / 255.0f, 56.0f / 255.0f, 56.0f / 255.0f, 1.0f);   // #383838
         functions->glClear(GL_COLOR_BUFFER_BIT);
     }
     functions->glEnable(GL_BLEND);

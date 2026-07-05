@@ -9,6 +9,7 @@
 #include <QCursor>
 #include <QHash>
 #include <QImage>
+#include <QLineF>
 #include <QOpenGLWidget>
 #include <QPoint>
 #include <QPolygonF>
@@ -188,6 +189,15 @@ private:
     void refreshHover(const QPointF &point, Qt::KeyboardModifiers modifiers);
     void selectByMarquee(Qt::KeyboardModifiers modifiers);
     bool pointInPolygon(const QPointF &point, const QPolygonF &polygon) const;
+    // Precise pick test against a shape's actual inked triangles (falls back to
+    // the shape quad when no mesh geometry is available for the shape).
+    bool layerContainsScreenPoint(const fh6::ShapeLayer &layer, const QPointF &screenPoint) const;
+    // True when a screen-space rect overlaps the shape's actual inked triangles
+    // (falls back to the shape quad when no mesh is available). Used by marquee
+    // selection so touching any part of a shape's art selects it.
+    bool layerIntersectsRect(const fh6::ShapeLayer &layer, const QRectF &screenRect) const;
+    // Boundary edges (silhouette) of a shape's triangle mesh, in local coords.
+    const QVector<QLineF> &shapeOutlineLocal(int shapeId);
     bool movedPastClickThreshold(const QPointF &point) const;
     QString guideAtScreenPoint(const QPointF &point);
     void drawGuideLayers(QPainter &painter);
@@ -224,6 +234,10 @@ private:
     // Relative transform mode: the selection box follows the shape/group orientation.
     bool transformRelativeMode_ = false;
     bool moveToolAutoSelect_ = false;
+    // Set on a Select-tool press that landed on the current selection's transform
+    // box (a handle, rotate zone, or a selected shape); tells SelectTool::beginDrag
+    // to grab a transform handle rather than force a plain move.
+    bool selectPressOnBox_ = false;
     bool selectionFlashEnabled_ = true;
     // Frame angle for a Relative-mode multi-selection box. It is NOT stored directly (that
     // would go stale on undo/redo); instead it is derived live as
@@ -258,7 +272,11 @@ private:
     // refreshes the layer tree to show the newly inserted clones.
     bool dragDuplicated_ = false;
     QString hoverLayerId_;
-    QPolygonF hoverPolygon_;
+    // Precise hover highlight: the hovered shape's silhouette in screen space.
+    QVector<QLineF> hoverOutline_;
+    // Cached per-shape silhouette (boundary edges of the triangle mesh) in the
+    // shape's local frame; built on demand since shape geometry is static.
+    QHash<int, QVector<QLineF>> shapeOutlineCache_;
     QVector<HitEntry> hitCache_;
     bool hitCacheDirty_ = true;
     NativeShapeRenderer renderer_;

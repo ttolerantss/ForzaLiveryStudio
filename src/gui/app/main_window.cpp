@@ -46,6 +46,7 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
+#include <QFont>
 #include <QFormLayout>
 #include <QHash>
 #include <QHBoxLayout>
@@ -69,6 +70,7 @@
 #include <QMenuBar>
 #include <QMessageBox>
 #include <QModelIndex>
+#include <QPixmap>
 #include <QPushButton>
 #include <QRectF>
 #include <QMimeData>
@@ -78,6 +80,7 @@
 #include <QProgressDialog>
 #include <QSettings>
 #include <QShortcut>
+#include <QShowEvent>
 #include <QSize>
 #include <QSplitter>
 #include <QSpinBox>
@@ -102,6 +105,8 @@
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
+#include <windows.h>
+#include <windowsx.h>
 #include <objbase.h>
 #include <wincodec.h>
 #endif
@@ -114,7 +119,14 @@ namespace {
 constexpr int InitialWindowWidth = 1200;
 constexpr int InitialWindowHeight = 780;
 constexpr int TreeIconExtent = 64;
-constexpr int ToolbarIconExtent = 18;
+constexpr int ToolbarIconExtent = 24;
+constexpr int MenuBarLogoExtent = 20;   // app logo shown at the left of the menu bar
+constexpr int ResizeBorderWidth = 6;    // window edge grab band for the custom frame (px)
+constexpr int CaptionButtonWidth = 44;  // min/max/close button size on the menu-bar plane
+constexpr int CaptionButtonHeight = 28;
+// Bumped whenever the default dock arrangement changes so a previously saved
+// layout from an older version is ignored (restoreState() rejects a mismatch).
+constexpr int LayoutStateVersion = 2;
 constexpr int DockSplitterHandleWidth = 6;
 constexpr int DetailsLabelMargin = 10;
 
@@ -204,6 +216,7 @@ MainWindow::MainWindow(QWidget *parent)
     setupOptionsMenu();
     setupToolbar();
     setupWindowMenu();
+    setupCaptionButtons();
 
     // Capture the freshly built layout so Reset Layout can return to it, then
     // restore any previously saved layout (mirrors the Python _restore_layout).
@@ -274,6 +287,12 @@ QDockWidget *MainWindow::addPanelDock(const QString &title, const QString &objec
 
 void MainWindow::setupDocks()
 {
+    // Let the bottom dock area span the full window width (for the Shapes browser)
+    // rather than yielding its corners to the left/right dock areas.
+    setCorner(Qt::BottomLeftCorner, Qt::BottomDockWidgetArea);
+    setCorner(Qt::BottomRightCorner, Qt::BottomDockWidgetArea);
+
+    // Layers on the left, with the Buffer below it.
     auto *layersContainer = new QSplitter(Qt::Vertical, this);
     layersContainer->setChildrenCollapsible(false);
     layersContainer->setHandleWidth(DockSplitterHandleWidth);
@@ -283,26 +302,14 @@ void MainWindow::setupDocks()
     installSplitterResizeCursor(layersContainer);
 
     auto *layersDock = addPanelDock(QStringLiteral("Layers"), QStringLiteral("LayersDock"),
-                                    QStringLiteral("WidgetLayers.xpm"), Qt::RightDockWidgetArea, layersContainer);
+                                    QStringLiteral("WidgetLayers.xpm"), Qt::LeftDockWidgetArea, layersContainer);
 
     clipboardWidget_ = new ClipboardBufferWidget(this);
     auto *clipboardDock = addPanelDock(QStringLiteral("Buffer"), QStringLiteral("BufferDock"),
-                                       QStringLiteral("WidgetBuffer.xpm"), Qt::RightDockWidgetArea, clipboardWidget_);
+                                       QStringLiteral("WidgetBuffer.xpm"), Qt::LeftDockWidgetArea, clipboardWidget_);
     splitDockWidget(layersDock, clipboardDock, Qt::Vertical);
 
-    details_ = new QLabel(this);
-    details_->setMargin(DetailsLabelMargin);
-    details_->setWordWrap(true);
-    auto *detailsDock = addPanelDock(QStringLiteral("Project"), QStringLiteral("ProjectDock"),
-                                     QStringLiteral("WidgetProject.xpm"), Qt::RightDockWidgetArea, details_);
-
-    headerMetadata_ = new HeaderMetadataWidget(this);
-    headerMetadata_->setApplyCallback([this]() { applyHeaderMetadata(); });
-    headerMetadataDock_ = addPanelDock(QStringLiteral("Header"), QStringLiteral("HeaderMetadataDock"),
-                                       QStringLiteral("WidgetProject.xpm"), Qt::RightDockWidgetArea, headerMetadata_);
-    tabifyDockWidget(detailsDock, headerMetadataDock_);
-    detailsDock->raise();
-
+    // Properties on the right, with Project/Header tabbed below it.
     properties_ = new PropertyPanel(state_, this);
     // Multi/group transforms pivot about the selection's visual bounding box, which
     // needs shape sizes from the canvas geometry store.
@@ -311,15 +318,29 @@ void MainWindow::setupDocks()
     });
     applyBehaviorSettings(loadBehaviorSettings(), false);
     auto *propertiesDock = addPanelDock(QStringLiteral("Properties"), QStringLiteral("PropertiesDock"),
-                                        QStringLiteral("WidgetProperties.xpm"), Qt::LeftDockWidgetArea, properties_);
+                                        QStringLiteral("WidgetProperties.xpm"), Qt::RightDockWidgetArea, properties_);
 
+    details_ = new QLabel(this);
+    details_->setMargin(DetailsLabelMargin);
+    details_->setWordWrap(true);
+    auto *detailsDock = addPanelDock(QStringLiteral("Project"), QStringLiteral("ProjectDock"),
+                                     QStringLiteral("WidgetProject.xpm"), Qt::RightDockWidgetArea, details_);
+    splitDockWidget(propertiesDock, detailsDock, Qt::Vertical);
+
+    headerMetadata_ = new HeaderMetadataWidget(this);
+    headerMetadata_->setApplyCallback([this]() { applyHeaderMetadata(); });
+    headerMetadataDock_ = addPanelDock(QStringLiteral("Header"), QStringLiteral("HeaderMetadataDock"),
+                                       QStringLiteral("WidgetProject.xpm"), Qt::RightDockWidgetArea, headerMetadata_);
+    tabifyDockWidget(detailsDock, headerMetadataDock_);
+    detailsDock->raise();
+
+    // Shapes browser full width along the bottom.
     shapesBrowser_ = new ShapesBrowserWidget(this);
     shapesBrowser_->setShapeSelectedCallback([this](int shapeId) { insertShape(shapeId); });
     shapesBrowser_->setCustomGroupSelectedCallback([this](const CustomShapeGroup &group) { insertCustomGroup(group.name, group.clipboard); });
     shapesBrowser_->setAddCurrentSelectionCallback([this]() { saveCurrentSelectionAsCustomGroup(); });
-    auto *shapesDock = addPanelDock(QStringLiteral("Shapes"), QStringLiteral("ShapesDock"),
-                                    QStringLiteral("WidgetShapesBrowser.xpm"), Qt::LeftDockWidgetArea, shapesBrowser_);
-    splitDockWidget(propertiesDock, shapesDock, Qt::Vertical);
+    addPanelDock(QStringLiteral("Shapes"), QStringLiteral("ShapesDock"),
+                 QStringLiteral("WidgetShapesBrowser.xpm"), Qt::BottomDockWidgetArea, shapesBrowser_);
 }
 
 void MainWindow::connectEditorStateSignals()
@@ -356,6 +377,20 @@ void MainWindow::connectEditorStateSignals()
 
 void MainWindow::setupFileMenu()
 {
+    // App logo at the far left of the menu bar (left of File/Edit/Options/Window),
+    // the way Adobe apps place their product icon.
+    const QString logoPath = assetPath(QStringLiteral("LiveryStudioIcon.svg"));
+    if (QFileInfo::exists(logoPath)) {
+        const QPixmap logoPixmap = QIcon(logoPath).pixmap(MenuBarLogoExtent, MenuBarLogoExtent);
+        if (!logoPixmap.isNull()) {
+            auto *logo = new QLabel(this);
+            logo->setPixmap(logoPixmap);
+            logo->setContentsMargins(6, 0, 8, 0);
+            logo->setAlignment(Qt::AlignCenter);
+            menuBar()->setCornerWidget(logo, Qt::TopLeftCorner);
+        }
+    }
+
     auto *fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
     auto addShortcutEntry = [this, fileMenu](const QString &text, const QString &id, const QString &label,
                                              const QKeySequence &shortcut, auto slot) {
@@ -465,9 +500,12 @@ void MainWindow::setupOptionsMenu()
 
 void MainWindow::setupToolbar()
 {
-    auto *toolBar = addToolBar(QStringLiteral("Tools"));
+    // Illustrator-style tool strip: a narrow, icon-only toolbar docked on the
+    // left. Labels remain available as hover tooltips (from each action's text).
+    auto *toolBar = new QToolBar(QStringLiteral("Tools"), this);
     toolBar->setObjectName(QStringLiteral("MainToolBar"));
-    toolBar->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    addToolBar(Qt::LeftToolBarArea, toolBar);
+    toolBar->setToolButtonStyle(Qt::ToolButtonIconOnly);
     toolBar->setIconSize(QSize(ToolbarIconExtent, ToolbarIconExtent));
     auto *toolGroup = new QActionGroup(toolBar);
     toolGroup->setExclusive(true);
@@ -481,7 +519,6 @@ void MainWindow::setupToolbar()
     };
     QAction *selectTool = addTool(QStringLiteral("Select"), QStringLiteral("select"), QKeySequence(Qt::Key_S), QStringLiteral("ToolbarSelect.xpm"));
     toolGroup->addAction(selectTool);
-    toolGroup->addAction(addTool(QStringLiteral("Move"), QStringLiteral("move"), QKeySequence(Qt::Key_V), QStringLiteral("ToolbarMove.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Marquee"), QStringLiteral("marquee"), QKeySequence(Qt::Key_F), QStringLiteral("ToolbarMarquee.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Transform"), QStringLiteral("transform"), QKeySequence(Qt::Key_T), QStringLiteral("ToolbarScale.xpm")));
     toolGroup->addAction(addTool(QStringLiteral("Rotate"), QStringLiteral("rotate"), QKeySequence(Qt::Key_R), QStringLiteral("ToolbarRotate.xpm")));
@@ -494,6 +531,179 @@ void MainWindow::setupToolbar()
     trackIconAction(addGuideAction, QStringLiteral("WidgetProject.xpm"));
     connect(addGuideAction, &QAction::triggered, this, [this]() { importGuideLayerDialog(); });
 }
+
+void MainWindow::setupCaptionButtons()
+{
+    captionButtons_ = new QWidget(this);
+    auto *layout = new QHBoxLayout(captionButtons_);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(0);
+
+    auto makeButton = [this](QChar glyph, const QString &objectName) {
+        auto *button = new QToolButton(captionButtons_);
+        QFont glyphFont(QStringLiteral("Segoe MDL2 Assets"));
+        glyphFont.setPixelSize(10);
+        button->setFont(glyphFont);
+        button->setText(QString(glyph));
+        button->setObjectName(objectName);
+        button->setFocusPolicy(Qt::NoFocus);
+        button->setAutoRaise(true);
+        button->setFixedSize(CaptionButtonWidth, CaptionButtonHeight);
+        return button;
+    };
+
+    // Glyphs from the Segoe MDL2 Assets font (ships with Windows 10/11).
+    minButton_ = makeButton(QChar(0xE921), QStringLiteral("captionMinimize"));
+    maxButton_ = makeButton(QChar(0xE922), QStringLiteral("captionMaximize"));
+    closeButton_ = makeButton(QChar(0xE8BB), QStringLiteral("captionClose"));
+    layout->addWidget(minButton_);
+    layout->addWidget(maxButton_);
+    layout->addWidget(closeButton_);
+
+    captionButtons_->setStyleSheet(QStringLiteral(
+        "QToolButton { border: none; background: transparent; color: #b6b6b6; }"
+        "QToolButton:hover { background: #3a3a3a; }"
+        "QToolButton#captionClose:hover { background: #e81123; color: white; }"));
+
+    connect(minButton_, &QToolButton::clicked, this, &QWidget::showMinimized);
+    connect(maxButton_, &QToolButton::clicked, this, &MainWindow::toggleMaximizeRestore);
+    connect(closeButton_, &QToolButton::clicked, this, &MainWindow::close);
+
+    menuBar()->setCornerWidget(captionButtons_, Qt::TopRightCorner);
+    updateMaximizeButtonGlyph();
+}
+
+void MainWindow::toggleMaximizeRestore()
+{
+    if (isMaximized()) {
+        showNormal();
+    } else {
+        showMaximized();
+    }
+}
+
+void MainWindow::updateMaximizeButtonGlyph()
+{
+    if (maxButton_ != nullptr) {
+        // 0xE923 = restore glyph, 0xE922 = maximize glyph.
+        maxButton_->setText(QString(QChar(isMaximized() ? 0xE923 : 0xE922)));
+    }
+}
+
+bool MainWindow::pointInCaptionDragZone(const QPoint &windowPos) const
+{
+    QMenuBar *bar = menuBar();
+    if (bar == nullptr) {
+        return false;
+    }
+    const QRect barRect = bar->geometry();
+    if (!barRect.contains(windowPos)) {
+        return false;
+    }
+    // Not draggable over a menu (File/Edit/...) or the caption buttons, which
+    // need their own clicks. The logo (left corner) is fine to drag over.
+    if (bar->actionAt(windowPos - barRect.topLeft()) != nullptr) {
+        return false;
+    }
+    if (captionButtons_ != nullptr) {
+        const QRect buttonRect(captionButtons_->mapTo(const_cast<MainWindow *>(this), QPoint(0, 0)),
+                               captionButtons_->size());
+        if (buttonRect.contains(windowPos)) {
+            return false;
+        }
+    }
+    return true;
+}
+
+void MainWindow::changeEvent(QEvent *event)
+{
+    QMainWindow::changeEvent(event);
+    if (event->type() == QEvent::WindowStateChange) {
+        updateMaximizeButtonGlyph();
+    }
+}
+
+void MainWindow::showEvent(QShowEvent *event)
+{
+    QMainWindow::showEvent(event);
+#ifdef Q_OS_WIN
+    if (!customFrameApplied_) {
+        customFrameApplied_ = true;
+        // Now that the native window exists, force a frame recalculation so the
+        // OS drops the standard title bar (handled in nativeEvent/WM_NCCALCSIZE).
+        HWND hwnd = reinterpret_cast<HWND>(winId());
+        ::SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
+                       SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
+    }
+#endif
+}
+
+#ifdef Q_OS_WIN
+bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
+{
+    if (eventType == "windows_generic_MSG") {
+        MSG *msg = static_cast<MSG *>(message);
+        switch (msg->message) {
+        case WM_NCCALCSIZE:
+            if (msg->wParam == TRUE) {
+                // Report the entire window as client area (no title bar). When
+                // maximized, inset by the frame so content isn't pushed off-screen
+                // and the taskbar remains visible.
+                if (::IsZoomed(msg->hwnd)) {
+                    auto *params = reinterpret_cast<NCCALCSIZE_PARAMS *>(msg->lParam);
+                    const int fx = ::GetSystemMetrics(SM_CXFRAME) + ::GetSystemMetrics(SM_CXPADDEDBORDER);
+                    const int fy = ::GetSystemMetrics(SM_CYFRAME) + ::GetSystemMetrics(SM_CXPADDEDBORDER);
+                    params->rgrc[0].left += fx;
+                    params->rgrc[0].right -= fx;
+                    params->rgrc[0].top += fy;
+                    params->rgrc[0].bottom -= fy;
+                }
+                *result = 0;
+                return true;
+            }
+            break;
+        case WM_NCHITTEST: {
+            // Work in logical window coordinates so the DPI scaling matches Qt's
+            // width()/height() and child-widget geometry.
+            RECT windowRect;
+            ::GetWindowRect(msg->hwnd, &windowRect);
+            const qreal dpr = devicePixelRatioF() > 0.0 ? devicePixelRatioF() : 1.0;
+            const QPoint local(qRound((GET_X_LPARAM(msg->lParam) - windowRect.left) / dpr),
+                               qRound((GET_Y_LPARAM(msg->lParam) - windowRect.top) / dpr));
+            if (!::IsZoomed(msg->hwnd)) {
+                const int b = ResizeBorderWidth;
+                const bool left = local.x() < b;
+                const bool right = local.x() >= width() - b;
+                const bool top = local.y() < b;
+                const bool bottom = local.y() >= height() - b;
+                if (top && left) { *result = HTTOPLEFT; return true; }
+                if (top && right) { *result = HTTOPRIGHT; return true; }
+                if (bottom && left) { *result = HTBOTTOMLEFT; return true; }
+                if (bottom && right) { *result = HTBOTTOMRIGHT; return true; }
+                if (left) { *result = HTLEFT; return true; }
+                if (right) { *result = HTRIGHT; return true; }
+                if (top) { *result = HTTOP; return true; }
+                if (bottom) { *result = HTBOTTOM; return true; }
+            }
+            if (pointInCaptionDragZone(local)) {
+                *result = HTCAPTION;
+                return true;
+            }
+            *result = HTCLIENT;
+            return true;
+        }
+        default:
+            break;
+        }
+    }
+    return QMainWindow::nativeEvent(eventType, message, result);
+}
+#else
+bool MainWindow::nativeEvent(const QByteArray &eventType, void *message, qintptr *result)
+{
+    return QMainWindow::nativeEvent(eventType, message, result);
+}
+#endif
 
 void MainWindow::setupWindowMenu()
 {
@@ -2214,7 +2424,7 @@ void MainWindow::saveLayout()
     // sizes relative to the window size at save time, so the geometry must be
     // restored first or the splits (e.g. a bottom-docked Shapes panel) drift.
     settings.setValue(QStringLiteral("layout/geometry"), saveGeometry());
-    settings.setValue(QStringLiteral("layout/state"), saveState());
+    settings.setValue(QStringLiteral("layout/state"), saveState(LayoutStateVersion));
     statusBar()->showMessage(QStringLiteral("Layout saved"), 5000);
 }
 
@@ -2231,7 +2441,7 @@ bool MainWindow::restoreLayout()
     if (!geometry.isEmpty()) {
         restoreGeometry(geometry);
     }
-    return restoreState(state);
+    return restoreState(state, LayoutStateVersion);
 }
 
 void MainWindow::resetLayout()

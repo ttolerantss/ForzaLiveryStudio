@@ -24,6 +24,8 @@ class QTreeView;
 class QDragEnterEvent;
 class QDragMoveEvent;
 class QDropEvent;
+class QShowEvent;
+class QToolButton;
 class QUrl;
 class QWidget;
 
@@ -71,8 +73,19 @@ private:
     void dragMoveEvent(QDragMoveEvent *event) override;
     void dropEvent(QDropEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
+    void changeEvent(QEvent *event) override;
+    void showEvent(QShowEvent *event) override;
+    bool nativeEvent(const QByteArray &eventType, void *message, qintptr *result) override;
     bool confirmDiscardUnsavedChanges();
     void updateWindowTitle();
+
+    // Custom (frameless) title bar: min/max/close buttons live on the menu-bar
+    // plane and the window frame is drawn by the OS-level hit-testing in
+    // nativeEvent(). See setupCaptionButtons()/pointInCaptionDragZone().
+    void setupCaptionButtons();
+    void toggleMaximizeRestore();
+    void updateMaximizeButtonGlyph();
+    bool pointInCaptionDragZone(const QPoint &windowPos) const;
 
     void importFileDialog();
     void importGuideLayerDialog();
@@ -173,6 +186,12 @@ private:
     QString creatorName_;
     QString projectJsonPath_;  // path of the associated project file (Save overwrites it directly)
     QByteArray defaultLayoutState_;
+    // Custom title-bar caption controls (top-right of the menu bar).
+    QWidget *captionButtons_ = nullptr;
+    QToolButton *minButton_ = nullptr;
+    QToolButton *maxButton_ = nullptr;
+    QToolButton *closeButton_ = nullptr;
+    bool customFrameApplied_ = false;
     bool syncingSelection_ = false;
     // Set while the tree drives a selection change so the ensuing tree resync does not scroll
     // (snap) the list back to the row the user just clicked. Canvas-driven selections still reveal.

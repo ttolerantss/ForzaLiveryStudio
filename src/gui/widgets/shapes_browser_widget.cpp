@@ -834,9 +834,14 @@ ShapesBrowserWidget::ShapesBrowserWidget(QWidget *parent)
     categoriesList_->setMinimumWidth(150);
     categoryLayout->addWidget(categoriesList_, 1);
     addSelection_ = new QToolButton(categoryPane);
-    addSelection_->setText(QStringLiteral("Add current selection"));
+    addSelection_->setText(QStringLiteral("Save Custom Shape"));
     addSelection_->setToolButtonStyle(Qt::ToolButtonTextOnly);
     addSelection_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    // Thin outline so it reads as a button (not a flat label).
+    addSelection_->setStyleSheet(QStringLiteral(
+        "QToolButton { border: 1px solid #4a4a4a; border-radius: 5px; padding: 5px 10px; background: transparent; }"
+        "QToolButton:hover { background: #333333; }"
+        "QToolButton:pressed { background: #3a3a3a; }"));
     categoryLayout->addWidget(addSelection_);
     splitter->addWidget(categoryPane);
     splitter->setCollapsible(0, false);

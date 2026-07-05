@@ -33,7 +33,7 @@ void saveUiTheme(UiTheme theme)
 
 QColor defaultCanvasColor(UiTheme theme)
 {
-    return theme == UiTheme::Light ? QColor(244, 245, 247) : QColor(24, 25, 28);
+    return theme == UiTheme::Light ? QColor(244, 245, 247) : QColor(56, 56, 56);   // dark: #383838
 }
 
 CanvasColorSettings loadCanvasColorSettings()
@@ -128,7 +128,7 @@ bool isDarkTheme(UiTheme theme)
 
 QColor iconColorForTheme(UiTheme theme)
 {
-    return isDarkTheme(theme) ? QColor(238, 241, 245) : QColor(32, 34, 37);
+    return isDarkTheme(theme) ? QColor(182, 182, 182) : QColor(32, 34, 37);   // dark icons: #b6b6b6
 }
 
 QPalette paletteForTheme(UiTheme theme)
@@ -153,10 +153,10 @@ QPalette paletteForTheme(UiTheme theme)
         return palette;
     }
 
-    palette.setColor(QPalette::Window, QColor(32, 33, 36));
+    palette.setColor(QPalette::Window, QColor(38, 38, 38));   // sidebar/chrome: #262626
     palette.setColor(QPalette::WindowText, QColor(238, 241, 245));
-    palette.setColor(QPalette::Base, QColor(24, 25, 28));
-    palette.setColor(QPalette::AlternateBase, QColor(38, 40, 44));
+    palette.setColor(QPalette::Base, QColor(24, 24, 24));           // panels (layers/etc.): #181818, matches buffer
+    palette.setColor(QPalette::AlternateBase, QColor(32, 32, 32));
     palette.setColor(QPalette::ToolTipBase, QColor(46, 48, 54));
     palette.setColor(QPalette::ToolTipText, QColor(238, 241, 245));
     palette.setColor(QPalette::Text, QColor(238, 241, 245));
@@ -171,6 +171,114 @@ QPalette paletteForTheme(UiTheme theme)
     return palette;
 }
 
+namespace {
+
+// Flat, modern styling layered over Fusion for the dark theme: removes the
+// default gradient/beveled Windows look and gives the app its own identity.
+// Neutral greys with a blue accent (matching the on-canvas selection colour).
+QString darkStyleSheet()
+{
+    return QStringLiteral(R"(
+/* Menu bar */
+QMenuBar { background: #262626; border: none; padding: 2px 2px; }
+QMenuBar::item { background: transparent; padding: 5px 10px; border-radius: 4px; }
+QMenuBar::item:selected { background: #333333; }
+QMenuBar::item:pressed { background: #3a3a3a; }
+
+/* Menus */
+QMenu { background: #1f1f1f; border: 1px solid #3a3a3a; padding: 4px; }
+QMenu::item { padding: 6px 26px; border-radius: 4px; }
+QMenu::item:selected { background: #1482f0; color: #ffffff; }
+QMenu::item:disabled { color: #6a6a6a; }
+QMenu::separator { height: 1px; background: #3a3a3a; margin: 4px 8px; }
+
+QToolTip { background: #1f1f1f; color: #dcdcdc; border: 1px solid #3a3a3a; padding: 4px 6px; }
+
+/* Push buttons */
+QPushButton {
+    background: #2f2f2f; color: #dcdcdc;
+    border: 1px solid #3a3a3a; border-radius: 5px;
+    padding: 5px 14px; min-height: 16px;
+}
+QPushButton:hover { background: #383838; border-color: #4a4a4a; }
+QPushButton:pressed { background: #2a2a2a; }
+QPushButton:disabled { color: #6a6a6a; background: #2a2a2a; border-color: #333333; }
+QPushButton:default { border-color: #1482f0; }
+
+/* Tool buttons */
+QToolButton { background: transparent; border: none; border-radius: 5px; padding: 4px; }
+QToolButton:hover { background: #333333; }
+QToolButton:pressed { background: #3a3a3a; }
+QToolButton:checked { background: #4a4a4a; }
+
+/* Text inputs, spin boxes, combos */
+QLineEdit, QPlainTextEdit, QTextEdit, QAbstractSpinBox, QComboBox {
+    background: #1c1c1c; color: #dcdcdc;
+    border: 1px solid #3a3a3a; border-radius: 5px; padding: 3px 6px;
+    selection-background-color: #1482f0; selection-color: #ffffff;
+}
+QLineEdit:focus, QPlainTextEdit:focus, QTextEdit:focus, QAbstractSpinBox:focus, QComboBox:focus { border-color: #1482f0; }
+QAbstractSpinBox::up-button, QAbstractSpinBox::down-button { background: #2a2a2a; border: none; width: 16px; }
+QAbstractSpinBox::up-button:hover, QAbstractSpinBox::down-button:hover { background: #383838; }
+QComboBox::drop-down { border: none; width: 18px; }
+QComboBox QAbstractItemView { background: #1f1f1f; border: 1px solid #3a3a3a; selection-background-color: #1482f0; }
+
+/* Item views */
+QTreeView, QListView, QTableView, QListWidget {
+    background: #181818; alternate-background-color: #202020;
+    border: 1px solid #2e2e2e; outline: none;
+}
+QTreeView::item:hover, QListView::item:hover, QListWidget::item:hover { background: #232323; }
+QTreeView::item:selected, QListView::item:selected, QListWidget::item:selected { background: #1482f0; color: #ffffff; }
+QHeaderView::section { background: #262626; color: #b6b6b6; padding: 4px; border: none; border-bottom: 1px solid #3a3a3a; }
+
+/* Tabs (tabified docks) */
+QTabWidget::pane { border: 1px solid #2e2e2e; }
+QTabBar::tab { background: #242424; color: #b6b6b6; padding: 6px 12px; border: none; border-top-left-radius: 5px; border-top-right-radius: 5px; }
+QTabBar::tab:selected { background: #333333; color: #ffffff; }
+QTabBar::tab:hover { background: #2c2c2c; }
+
+/* Scrollbars */
+QScrollBar:vertical { background: transparent; width: 12px; margin: 0; }
+QScrollBar::handle:vertical { background: #3a3a3a; border-radius: 5px; min-height: 24px; margin: 2px; }
+QScrollBar::handle:vertical:hover { background: #4d4d4d; }
+QScrollBar:horizontal { background: transparent; height: 12px; margin: 0; }
+QScrollBar::handle:horizontal { background: #3a3a3a; border-radius: 5px; min-width: 24px; margin: 2px; }
+QScrollBar::handle:horizontal:hover { background: #4d4d4d; }
+QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; background: none; border: none; }
+QScrollBar::add-page, QScrollBar::sub-page { background: none; }
+
+/* Dock titles + splitters */
+QDockWidget::title { background: #202020; padding: 6px 8px; border: none; }
+QSplitter::handle { background: #2e2e2e; }
+QSplitter::handle:horizontal { width: 3px; }
+QSplitter::handle:vertical { height: 3px; }
+
+/* Group boxes */
+QGroupBox { border: 1px solid #3a3a3a; border-radius: 6px; margin-top: 8px; padding-top: 8px; }
+QGroupBox::title { subcontrol-origin: margin; left: 10px; padding: 0 4px; color: #b6b6b6; }
+
+/* Check boxes / radio buttons */
+QCheckBox::indicator, QRadioButton::indicator { width: 15px; height: 15px; border: 1px solid #4a4a4a; background: #1c1c1c; }
+QCheckBox::indicator { border-radius: 3px; }
+QRadioButton::indicator { border-radius: 8px; }
+QCheckBox::indicator:checked, QRadioButton::indicator:checked { background: #1482f0; border-color: #1482f0; }
+
+/* Sliders */
+QSlider::groove:horizontal { height: 4px; background: #3a3a3a; border-radius: 2px; }
+QSlider::sub-page:horizontal { background: #1482f0; border-radius: 2px; }
+QSlider::handle:horizontal { background: #dcdcdc; width: 14px; margin: -6px 0; border-radius: 7px; }
+
+/* Progress + status bar */
+QProgressBar { border: 1px solid #3a3a3a; border-radius: 5px; background: #1c1c1c; text-align: center; color: #dcdcdc; }
+QProgressBar::chunk { background: #1482f0; border-radius: 4px; }
+QStatusBar { background: #202020; color: #9a9a9a; }
+QStatusBar::item { border: none; }
+)");
+}
+
+} // namespace
+
 void applyUiTheme(QApplication &app, UiTheme theme)
 {
     currentTheme = theme;
@@ -178,6 +286,7 @@ void applyUiTheme(QApplication &app, UiTheme theme)
         app.setStyle(QStyleFactory::create(QStringLiteral("Fusion")));
     }
     app.setPalette(paletteForTheme(theme));
+    app.setStyleSheet(theme == UiTheme::Dark ? darkStyleSheet() : QString());
 }
 
 UiTheme currentUiTheme()

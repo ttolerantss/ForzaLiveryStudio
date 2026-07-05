@@ -57,12 +57,18 @@ protected:
     ProjectCanvas &canvas_;
 };
 
+// Illustrator-style selection tool: it both selects (a press picks the item
+// under the cursor) and moves (a drag translates the selection), so it doubles
+// as the move tool. The press-time selection lives in ProjectCanvas.
 class SelectTool final : public CanvasTool {
 public:
     using CanvasTool::CanvasTool;
     QString name() const override;
-    bool handlePress(QMouseEvent *event) override;
+    bool picksUnderCursor() const override { return true; }
+    void beginDrag(const QPointF &screenPos, const QPointF &boxCenterWorld) override;
     bool handleRelease(QMouseEvent *event) override;
+    bool hoverCursor(const QPointF &point, QCursor *cursor) const override;
+    Qt::CursorShape idleCursorShape(const QPointF &point) const override;
 };
 
 class MoveTool final : public CanvasTool {

@@ -48,7 +48,9 @@ constexpr int SelectionFlashFrameMs = 33;
 
 // Overlay styling. These were inlined literals in drawOverlay()/drawCursorHint();
 // naming them keeps the paint routines declarative and the values in one place.
-const QColor SelectionAccentColor(255, 200, 50);   // hover halo + marquee accent
+const QColor SelectionAccentColor(255, 200, 50);   // (legacy accent)
+const QColor HoverOutlineColor(20, 130, 240);      // blue hover silhouette + selection box (Illustrator-style)
+const QColor MarqueeColor(200, 200, 200);          // light grey rubber-band marquee
 const QColor OverlayHaloColor(0, 0, 0);            // dark halo drawn behind bright strokes
 const QColor SelectionFrameColor(255, 255, 255);   // selection box outline + handle fill
 constexpr double HoverHaloWidth = 4.0;
@@ -57,6 +59,7 @@ constexpr double SelectionFrameHaloWidth = 3.0;
 constexpr double SelectionFrameLineWidth = 1.0;
 constexpr double HandleBorderWidth = 2.0;
 constexpr int MarqueeFillAlpha = 32;
+constexpr double WheelPanSpeed = 1.0;   // screen px panned per wheel-notch unit
 
 // Cursor hint bubble styling.
 const QColor CursorHintBorderColor(0, 0, 0, 180);
@@ -435,7 +438,7 @@ void ProjectCanvas::setTool(const QString &tool)
     tool_ = tool;
     activeTool_ = next;
     hoverLayerId_.clear();
-    hoverPolygon_ = {};
+    hoverOutline_.clear();
     if (state_ != nullptr) {
         state_->setToolName(tool_);
     }
@@ -453,7 +456,7 @@ void ProjectCanvas::invalidateSelectionCache()
     hitCacheDirty_ = true;
     selectionWorldBoundsCache_.reset();
     hoverLayerId_.clear();
-    hoverPolygon_ = {};
+    hoverOutline_.clear();
     updateSelectionFlashState();
 }
 
@@ -652,11 +655,144 @@ QString ProjectCanvas::guideAtScreenPoint(const QPointF &point)
     return {};
 }
 
+// Standard sign-test point-in-triangle (works regardless of vertex winding).
+static bool pointInTriangle(const QPointF &p, const QPointF &a, const QPointF &b, const QPointF &c)
+{
+    const double d1 = (p.x() - b.x()) * (a.y() - b.y()) - (a.x() - b.x()) * (p.y() - b.y());
+    const double d2 = (p.x() - c.x()) * (b.y() - c.y()) - (b.x() - c.x()) * (p.y() - c.y());
+    const double d3 = (p.x() - a.x()) * (c.y() - a.y()) - (c.x() - a.x()) * (p.y() - a.y());
+    const bool hasNeg = d1 < 0.0 || d2 < 0.0 || d3 < 0.0;
+    const bool hasPos = d1 > 0.0 || d2 > 0.0 || d3 > 0.0;
+    return !(hasNeg && hasPos);
+}
+
+bool ProjectCanvas::layerContainsScreenPoint(const fh6::ShapeLayer &layer, const QPointF &screenPoint) const
+{
+    const ShapeGeometry *geom = geometry_.shape(layer.shapeId);
+    if (geom == nullptr || geom->triangles.isEmpty()) {
+        // No mesh for this shape: fall back to its rectangular quad.
+        return pointInPolygon(screenPoint, layerScreenPolygon(layer));
+    }
+    // Map the screen point into the shape's local frame (the same centred frame
+    // the triangle vertices live in) and test it against the inked triangles.
+    bool invertible = false;
+    const QTransform toLocal = entryTransform(layer).inverted(&invertible);
+    if (!invertible) {
+        return false;
+    }
+    const QPointF local = toLocal.map(screenToWorld(screenPoint));
+    for (const ShapeTriangle &tri : geom->triangles) {
+        if (pointInTriangle(local, tri.p0, tri.p1, tri.p2)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+const QVector<QLineF> &ProjectCanvas::shapeOutlineLocal(int shapeId)
+{
+    const auto cached = shapeOutlineCache_.constFind(shapeId);
+    if (cached != shapeOutlineCache_.constEnd()) {
+        return cached.value();
+    }
+
+    QVector<QLineF> outline;
+    const ShapeGeometry *geom = geometry_.shape(shapeId);
+    if (geom != nullptr && !geom->triangles.isEmpty()) {
+        // The silhouette is the set of mesh edges used by exactly one triangle
+        // (shared/interior edges are used twice). Vertices copied from the same
+        // source array are bit-identical, so a quantised key matches them safely.
+        QHash<QString, int> edgeCount;
+        QHash<QString, QLineF> edgeLine;
+        auto addEdge = [&](const QPointF &a, const QPointF &b) {
+            auto q = [](double v) { return static_cast<qlonglong>(std::llround(v * 256.0)); };
+            const QString ka = QStringLiteral("%1,%2").arg(q(a.x())).arg(q(a.y()));
+            const QString kb = QStringLiteral("%1,%2").arg(q(b.x())).arg(q(b.y()));
+            const QString key = ka < kb ? ka + QLatin1Char('|') + kb : kb + QLatin1Char('|') + ka;
+            if (!edgeCount.contains(key)) {
+                edgeLine.insert(key, QLineF(a, b));
+            }
+            edgeCount[key] += 1;
+        };
+        for (const ShapeTriangle &tri : geom->triangles) {
+            addEdge(tri.p0, tri.p1);
+            addEdge(tri.p1, tri.p2);
+            addEdge(tri.p2, tri.p0);
+        }
+        for (auto it = edgeCount.constBegin(); it != edgeCount.constEnd(); ++it) {
+            if (it.value() == 1) {
+                outline.push_back(edgeLine.value(it.key()));
+            }
+        }
+    }
+    return *shapeOutlineCache_.insert(shapeId, outline);
+}
+
+// Proper-crossing test for two segments (collinear overlap is ignored, which is
+// fine for selection: containment cases are handled separately by the caller).
+static bool segmentsIntersect(const QPointF &p1, const QPointF &p2, const QPointF &p3, const QPointF &p4)
+{
+    auto orient = [](const QPointF &a, const QPointF &b, const QPointF &c) {
+        const double v = (b.x() - a.x()) * (c.y() - a.y()) - (b.y() - a.y()) * (c.x() - a.x());
+        return v > 0.0 ? 1 : (v < 0.0 ? -1 : 0);
+    };
+    return orient(p1, p2, p3) != orient(p1, p2, p4)
+        && orient(p3, p4, p1) != orient(p3, p4, p2);
+}
+
+bool ProjectCanvas::layerIntersectsRect(const fh6::ShapeLayer &layer, const QRectF &screenRect) const
+{
+    const ShapeGeometry *geom = geometry_.shape(layer.shapeId);
+    if (geom == nullptr || geom->triangles.isEmpty()) {
+        // No mesh: fall back to the shape's quad bounds.
+        return screenRect.intersects(layerScreenPolygon(layer).boundingRect());
+    }
+    const QTransform toWorld = entryTransform(layer);
+    const QPointF rectPts[4] = {
+        screenRect.topLeft(), screenRect.topRight(),
+        screenRect.bottomRight(), screenRect.bottomLeft(),
+    };
+    for (const ShapeTriangle &tri : geom->triangles) {
+        const QPointF triPts[3] = {
+            worldToScreen(toWorld.map(tri.p0)),
+            worldToScreen(toWorld.map(tri.p1)),
+            worldToScreen(toWorld.map(tri.p2)),
+        };
+        // A triangle vertex inside the marquee, or a marquee corner inside the
+        // triangle, means they overlap.
+        if (screenRect.contains(triPts[0]) || screenRect.contains(triPts[1]) || screenRect.contains(triPts[2])) {
+            return true;
+        }
+        for (const QPointF &r : rectPts) {
+            if (pointInTriangle(r, triPts[0], triPts[1], triPts[2])) {
+                return true;
+            }
+        }
+        // Otherwise they overlap only if their edges cross.
+        for (int i = 0; i < 3; ++i) {
+            for (int j = 0; j < 4; ++j) {
+                if (segmentsIntersect(triPts[i], triPts[(i + 1) % 3], rectPts[j], rectPts[(j + 1) % 4])) {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 QVector<QString> ProjectCanvas::layersAtScreenPoint(const QPointF &point)
 {
     QVector<QString> ids;
+    if (project_ == nullptr) {
+        return ids;
+    }
     for (const HitEntry &entry : hitEntries()) {
-        if (entry.screenBounds.contains(point) && pointInPolygon(point, entry.screenPolygon)) {
+        if (entry.layerIndex < 0 || entry.layerIndex >= static_cast<int>(project_->layers.size())) {
+            continue;
+        }
+        // Cheap quad-bounds reject, then a precise test against the shape's art.
+        if (entry.screenBounds.contains(point)
+            && layerContainsScreenPoint(project_->layers[entry.layerIndex], point)) {
             ids.push_back(entry.layerId);
         }
     }
@@ -1682,12 +1818,12 @@ void ProjectCanvas::drawOverlay(QPainter &painter)
     painter.resetTransform();
     painter.setRenderHint(QPainter::Antialiasing, true);
 
-    if (!hoverPolygon_.isEmpty()) {
+    if (!hoverOutline_.isEmpty()) {
         painter.setBrush(Qt::NoBrush);
         painter.setPen(QPen(OverlayHaloColor, HoverHaloWidth));
-        painter.drawPolygon(hoverPolygon_);
-        painter.setPen(QPen(SelectionAccentColor, HoverAccentWidth));
-        painter.drawPolygon(hoverPolygon_);
+        painter.drawLines(hoverOutline_);
+        painter.setPen(QPen(HoverOutlineColor, HoverAccentWidth));
+        painter.drawLines(hoverOutline_);
     }
 
     const SelectionBox box = currentSelectionBox();
@@ -1704,10 +1840,10 @@ void ProjectCanvas::drawOverlay(QPainter &painter)
             painter.setBrush(Qt::NoBrush);
             painter.setPen(QPen(OverlayHaloColor, SelectionFrameHaloWidth));
             painter.drawPolygon(boxPolygon);
-            painter.setPen(QPen(SelectionFrameColor, SelectionFrameLineWidth));
+            painter.setPen(QPen(HoverOutlineColor, SelectionFrameLineWidth));
             painter.drawPolygon(boxPolygon);
         }
-        if (tool_ == QStringLiteral("transform")) {
+        if (tool_ == QStringLiteral("transform") || tool_ == QStringLiteral("select")) {
             QVector<QPointF> handles = {
                 topLeft, topRight, bottomLeft, bottomRight,
                 toScreen.map(QPointF(lr.left(), lr.center().y())),
@@ -1737,10 +1873,8 @@ void ProjectCanvas::drawOverlay(QPainter &painter)
     }
 
     if (dragMode_ == DragMode::Marquee && marqueeRect_.isValid()) {
-        QColor marqueeFill = SelectionAccentColor;
-        marqueeFill.setAlpha(MarqueeFillAlpha);
-        painter.setBrush(marqueeFill);
-        painter.setPen(QPen(SelectionAccentColor, 1, Qt::DashLine));
+        painter.setBrush(Qt::NoBrush);
+        painter.setPen(QPen(MarqueeColor, 1, Qt::DashLine));
         painter.drawRect(marqueeRect_);
     }
     drawCursorHint(painter);
@@ -1832,10 +1966,24 @@ void ProjectCanvas::refreshHover(const QPointF &point, Qt::KeyboardModifiers mod
         return;
     }
     hoverLayerId_ = id;
-    hoverPolygon_ = {};
-    for (const HitEntry &entry : hitEntries()) {
-        if (entry.layerId == id) {
-            hoverPolygon_ = entry.screenPolygon;
+    hoverOutline_.clear();
+    // Highlight the shape under the cursor with its precise silhouette, but not
+    // when it is already selected (its selection box is shown instead).
+    const bool alreadySelected = state_ != nullptr && state_->selectedLayerIds().contains(id);
+    if (!id.isEmpty() && project_ != nullptr && !alreadySelected) {
+        for (const HitEntry &entry : hitEntries()) {
+            if (entry.layerId != id) {
+                continue;
+            }
+            if (entry.layerIndex < 0 || entry.layerIndex >= static_cast<int>(project_->layers.size())) {
+                break;
+            }
+            const fh6::ShapeLayer &layer = project_->layers[entry.layerIndex];
+            const QTransform toWorld = entryTransform(layer);
+            for (const QLineF &edge : shapeOutlineLocal(layer.shapeId)) {
+                hoverOutline_.push_back(QLineF(worldToScreen(toWorld.map(edge.p1())),
+                                               worldToScreen(toWorld.map(edge.p2()))));
+            }
             break;
         }
     }
@@ -1850,8 +1998,15 @@ void ProjectCanvas::selectByMarquee(Qt::KeyboardModifiers modifiers)
     QSet<QString> ids = (modifiers & (Qt::ShiftModifier | Qt::ControlModifier)) && state_ != nullptr
         ? state_->selectedLayerIds()
         : QSet<QString>{};
+    // Select any shape the marquee touches (intersects its actual art), so
+    // dragging over even a small part of a shape selects it.
+    const QRectF marquee = marqueeRect_.normalized();
     for (const HitEntry &entry : hitEntries()) {
-        if (marqueeRect_.contains(entry.screenBounds.center())) {
+        if (entry.layerIndex < 0 || entry.layerIndex >= static_cast<int>(project_->layers.size())) {
+            continue;
+        }
+        if (entry.screenBounds.intersects(marquee)
+            && layerIntersectsRect(project_->layers[entry.layerIndex], marquee)) {
             ids.insert(entry.layerId);
         }
     }
@@ -1862,7 +2017,7 @@ void ProjectCanvas::selectByMarquee(Qt::KeyboardModifiers modifiers)
                 continue;
             }
             const QRectF bounds = guideScreenPolygon(guide).boundingRect();
-            if (marqueeRect_.contains(bounds.center())) {
+            if (marquee.intersects(bounds)) {
                 guideIds.insert(guide.id);
             }
         }
@@ -2097,34 +2252,112 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
     const bool picksUnderCursor = activeTool_ != nullptr && activeTool_->picksUnderCursor();
 
     auto selectMoveAutoTarget = [this, event]() -> bool {
+        const Qt::KeyboardModifiers mods = event->modifiers();
+        const bool ctrl = mods & Qt::ControlModifier;    // pick the individual object
+        const bool shift = mods & Qt::ShiftModifier;     // add/remove from selection
+        const bool anyModifier = ctrl || shift;
         const QString target = selectTargetAtScreenPoint(event->position(), {});
         if (!target.isEmpty()) {
-            const QString groupId = state_->topmostGroupForEntry(target);
-            if (!groupId.isEmpty()) {
-                QSet<QString> leafIds;
-                for (const QString &id : state_->leafLayerIdsForEntry(groupId)) {
-                    leafIds.insert(id);
+            // Ctrl selects just the object under the cursor even inside a group;
+            // without Ctrl the whole enclosing group is selected.
+            const QString groupId = ctrl ? QString() : state_->topmostGroupForEntry(target);
+            const QVector<QString> members = groupId.isEmpty()
+                ? QVector<QString>{target}
+                : state_->leafLayerIdsForEntry(groupId);
+            if (shift) {
+                // Shift-click toggles those shapes in/out of the current selection,
+                // building a multi-selection.
+                QSet<QString> ids = state_->selectedLayerIds();
+                bool allSelected = !members.isEmpty();
+                for (const QString &id : members) {
+                    if (!ids.contains(id)) {
+                        allSelected = false;
+                        break;
+                    }
                 }
-                state_->setSelectionIds(leafIds, {});
+                for (const QString &id : members) {
+                    if (allSelected) {
+                        ids.remove(id);
+                    } else {
+                        ids.insert(id);
+                    }
+                }
+                state_->setSelectionIds(ids, state_->selectedGuideLayerIds());
             } else {
-                state_->setSelectionIds({target}, {});
+                QSet<QString> ids;
+                for (const QString &id : members) {
+                    ids.insert(id);
+                }
+                state_->setSelectionIds(ids, {});
             }
             dragStartSelectionBounds_ = selectedScreenBounds();
-            return true;
+            return !state_->selectedLayerIds().isEmpty() || !state_->selectedGuideLayerIds().isEmpty();
         }
         const QString guideTarget = guideAtScreenPoint(event->position());
         if (!guideTarget.isEmpty()) {
-            state_->setSelectionIds({}, {guideTarget});
+            if (shift) {
+                QSet<QString> guides = state_->selectedGuideLayerIds();
+                if (guides.contains(guideTarget)) {
+                    guides.remove(guideTarget);
+                } else {
+                    guides.insert(guideTarget);
+                }
+                state_->setSelectionIds(state_->selectedLayerIds(), guides);
+            } else {
+                state_->setSelectionIds({}, {guideTarget});
+            }
             dragStartSelectionBounds_ = selectedScreenBounds();
-            return true;
+            return !state_->selectedLayerIds().isEmpty() || !state_->selectedGuideLayerIds().isEmpty();
         }
-        state_->clearSelection();
+        if (!anyModifier) {
+            state_->clearSelection();
+        }
         return false;
     };
 
-    if (tool_ == QStringLiteral("move")
-        && moveToolAutoSelect_
-        && !selectedScreenBounds().contains(event->position())) {
+    // The Select tool is Illustrator's arrow: it selects, moves, and transforms.
+    // When it already has a selection and the press lands on that selection's
+    // transform box (a handle, the rotate zone, or a selected shape), begin the
+    // transform/move drag directly. Otherwise pick the shape under the cursor.
+    // The legacy Move tool keeps its optional auto-select behaviour.
+    selectPressOnBox_ = false;
+    if (tool_ == QStringLiteral("select")) {
+        const bool additive = event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier);
+        if (!additive
+            && (!state_->selectedLayerIds().isEmpty() || !state_->selectedGuideLayerIds().isEmpty())) {
+            const SelectionBox box = currentSelectionBox();
+            const QString hit = selectTargetAtScreenPoint(event->position(), {});
+            const bool onSelectedShape = !hit.isEmpty() && state_->selectedLayerIds().contains(hit);
+            selectPressOnBox_ = box.valid
+                && (!transformHandleAt(event->position(), box).isEmpty()
+                    || rotateZoneAt(event->position(), box)
+                    || onSelectedShape);
+        }
+        if (!selectPressOnBox_) {
+            const QString target = selectTargetAtScreenPoint(event->position(), {});
+            const bool overGuide = target.isEmpty() && !guideAtScreenPoint(event->position()).isEmpty();
+            if (target.isEmpty() && !overGuide) {
+                // Empty canvas: start a rubber-band marquee (Illustrator-style),
+                // so a click-drag selects without switching to the Marquee tool.
+                // The release (SelectTool::handleRelease) resolves it; a plain
+                // click with no drag clears the selection.
+                if (!(event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier)) && state_ != nullptr) {
+                    state_->clearSelection();
+                }
+                dragMode_ = DragMode::Marquee;
+                marqueeRect_ = QRectF(dragStartScreen_, dragStartScreen_).normalized();
+                updateCursorForPoint(event->position());
+                event->accept();
+                return;
+            }
+            if (!selectMoveAutoTarget()) {
+                event->accept();
+                return;
+            }
+        }
+    } else if (tool_ == QStringLiteral("move")
+               && moveToolAutoSelect_
+               && !selectedScreenBounds().contains(event->position())) {
         if (!selectMoveAutoTarget()) {
             event->accept();
             return;
@@ -2283,22 +2516,31 @@ void ProjectCanvas::mouseReleaseEvent(QMouseEvent *event)
 
 void ProjectCanvas::wheelEvent(QWheelEvent *event)
 {
-    updateViewTransform();
-    const QPointF anchorWorld = screenToWorld(event->position());
-    // Zoom on whichever axis carries the wheel notch. Holding Alt makes some platforms
-    // deliver the notch as a horizontal delta (angleDelta().x()), leaving y() == 0; reading
-    // y() alone would then always take the zoom-out branch, so Alt appeared to force zoom-out.
-    // Falling back to x() makes Alt a no-op for zooming, as intended.
+    // Read the notch on whichever axis carries it (some platforms deliver the
+    // delta on x() when a modifier is held).
     const QPoint wheelDelta = event->angleDelta();
     const int notch = wheelDelta.y() != 0 ? wheelDelta.y() : wheelDelta.x();
     if (notch == 0) {
         event->accept();
         return;
     }
-    const double factor = notch > 0 ? 1.15 : 1.0 / 1.15;
-    zoom_ = std::clamp(zoom_ * factor, 0.1, 100.0);
-    updateViewTransform();
-    pan_ += event->position() - worldToScreen(anchorWorld);
+
+    const Qt::KeyboardModifiers mods = event->modifiers();
+    if (mods & Qt::AltModifier) {
+        // Alt + scroll: zoom about the cursor.
+        updateViewTransform();
+        const QPointF anchorWorld = screenToWorld(event->position());
+        const double factor = notch > 0 ? 1.15 : 1.0 / 1.15;
+        zoom_ = std::clamp(zoom_ * factor, 0.1, 100.0);
+        updateViewTransform();
+        pan_ += event->position() - worldToScreen(anchorWorld);
+    } else if (mods & Qt::ControlModifier) {
+        // Ctrl + scroll: pan horizontally.
+        pan_ += QPointF(notch * WheelPanSpeed, 0.0);
+    } else {
+        // Plain scroll: pan vertically.
+        pan_ += QPointF(0.0, notch * WheelPanSpeed);
+    }
     invalidateSceneCache();
     update();
     event->accept();
@@ -2359,7 +2601,7 @@ void ProjectCanvas::keyReleaseEvent(QKeyEvent *event)
 void ProjectCanvas::leaveEvent(QEvent *event)
 {
     hoverLayerId_.clear();
-    hoverPolygon_ = {};
+    hoverOutline_.clear();
     clearCursorHint();
     unsetCursor();
     update();

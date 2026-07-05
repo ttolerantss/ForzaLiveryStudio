@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="bannerfls.png" alt="Forza Livery Studio" width="100%">
+</p>
+
 # Forza Livery Studio
   I ~hate~ love this name. A standalone C++ QT editor for Forza vinyl groups and in the future *probably* for liveries. **Does not** modify the game memory in runtime (very cool). We are not responsible for any damage done to your groups/liveries, use at your own discretion.
 

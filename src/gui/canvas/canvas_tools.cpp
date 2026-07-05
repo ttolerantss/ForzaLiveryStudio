@@ -39,56 +39,100 @@ Qt::CursorShape CanvasTool::idleCursorShape(const QPointF &point) const
 }
 
 // --- Select ---------------------------------------------------------------
+// The Select tool doubles as the move tool: ProjectCanvas::mousePressEvent
+// picks the item under the cursor on press, and beginDrag() below arms a move
+// so a drag translates the selection (Illustrator's black-arrow behaviour).
 
 QString SelectTool::name() const
 {
     return QStringLiteral("select");
 }
 
-bool SelectTool::handlePress(QMouseEvent *event)
+void SelectTool::beginDrag(const QPointF &screenPos, const QPointF &boxCenterWorld)
 {
-    // Selection is resolved on release so a press can still turn into a pan.
-    event->accept();
-    return true;
+    ProjectCanvas &c = canvas_;
+    // A press that freshly picked a shape just moves it. Only a press that
+    // landed on the existing selection's box may grab a transform handle, so
+    // selecting a shape never accidentally scales/rotates it.
+    if (c.selectPressOnBox_) {
+        c.activeHandle_ = c.transformHandleAt(screenPos, c.dragStartBox_);
+        if (c.activeHandle_ == QStringLiteral("skew")) {
+            c.dragMode_ = ProjectCanvas::DragMode::Skew;
+            return;
+        }
+        if (!c.activeHandle_.isEmpty()) {
+            c.dragMode_ = ProjectCanvas::DragMode::Scale;
+            c.captureScaleReference();
+            return;
+        }
+        if (c.rotateZoneAt(screenPos, c.dragStartBox_)) {
+            c.beginRotateDrag(boxCenterWorld);
+            return;
+        }
+    }
+    c.dragMode_ = ProjectCanvas::DragMode::Move;
 }
 
 bool SelectTool::handleRelease(QMouseEvent *event)
 {
     ProjectCanvas &c = canvas_;
-    if (event->button() != Qt::LeftButton || c.dragMode_ != ProjectCanvas::DragMode::None) {
+    // Only the empty-canvas rubber-band marquee is resolved here; move/transform
+    // drags fall through to the canvas's shared finishDrag path.
+    if (event->button() != Qt::LeftButton || c.dragMode_ != ProjectCanvas::DragMode::Marquee) {
         return false;
     }
     if (c.movedPastClickThreshold(event->position())) {
-        c.hoverLayerId_.clear();
-        c.hoverPolygon_ = {};
-        c.update();
-        event->accept();
-        return true;
+        c.selectByMarquee(event->modifiers());
+    } else if (c.state_ != nullptr
+               && !(event->modifiers() & (Qt::ShiftModifier | Qt::ControlModifier))) {
+        c.state_->clearSelection();
     }
-    const QString target = c.selectTargetAtScreenPoint(event->position(), event->modifiers());
-    const QString guideTarget = target.isEmpty() ? c.guideAtScreenPoint(event->position()) : QString();
-    if (c.state_ != nullptr) {
-        if (!target.isEmpty()) {
-            c.state_->selectLayerAtPoint(target, event->modifiers());
-        } else if (!guideTarget.isEmpty()) {
-            QSet<QString> guides = c.state_->selectedGuideLayerIds();
-            if (event->modifiers() & Qt::ControlModifier) {
-                if (guides.contains(guideTarget)) {
-                    guides.remove(guideTarget);
-                } else {
-                    guides.insert(guideTarget);
-                }
-                c.state_->setSelectionIds(c.state_->selectedLayerIds(), guides);
-            } else {
-                c.state_->setSelectionIds({}, {guideTarget});
-            }
-        } else {
-            c.state_->clearSelection();
-        }
-    }
-    c.refreshHover(event->position(), event->modifiers());
+    c.finishDrag();
+    c.update();
     event->accept();
     return true;
+}
+
+bool SelectTool::hoverCursor(const QPointF &point, QCursor *cursor) const
+{
+    ProjectCanvas &c = canvas_;
+    if (c.state_ == nullptr
+        || (c.state_->selectedLayerIds().isEmpty() && c.state_->selectedGuideLayerIds().isEmpty())) {
+        return false;
+    }
+    c.updateViewTransform();
+    const ProjectCanvas::SelectionBox box = c.currentSelectionBox();
+    const QString handle = c.transformHandleAt(point, box);
+    if (!handle.isEmpty()) {
+        *cursor = c.cursorForTransformHandle(handle, box);
+        return true;
+    }
+    if (c.rotateZoneAt(point, box)) {
+        *cursor = c.rotateCursorForPoint(point, box);
+        return true;
+    }
+    return false;
+}
+
+Qt::CursorShape SelectTool::idleCursorShape(const QPointF &point) const
+{
+    ProjectCanvas &c = canvas_;
+    if (c.state_ != nullptr
+        && (!c.state_->selectedLayerIds().isEmpty() || !c.state_->selectedGuideLayerIds().isEmpty())) {
+        c.updateViewTransform();
+        const ProjectCanvas::SelectionBox box = c.currentSelectionBox();
+        const QString handle = c.transformHandleAt(point, box);
+        if (!handle.isEmpty()) {
+            return c.cursorForScaleHandle(handle, box);
+        }
+        if (c.rotateZoneAt(point, box)) {
+            return Qt::ArrowCursor;
+        }
+        if (c.boxContainsScreenPoint(box, point)) {
+            return Qt::SizeAllCursor;
+        }
+    }
+    return Qt::ArrowCursor;
 }
 
 // --- Move -----------------------------------------------------------------
