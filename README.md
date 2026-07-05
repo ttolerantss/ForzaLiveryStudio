@@ -82,12 +82,6 @@ The manual lives in [`docs/MANUAL.md`](docs/MANUAL.md). Default shape names can 
 ## Status
 Group import/export is fully supported and the core functionality is in place. Liveries can currently only be imported, not exported. The app targets Forza games generally; compatibility may still vary by title, since not every game/version has been verified.
 
-## Q/A
-- **Is it slopcoded?** The original port to C++ was forced by Python performance limits; it is what it is.
-- **When `[FeatureName]`?** Tomorrow.
-- **Can I get banned for this?** Probably not.
-- **I want `[FeatureName]`, where do I request it?** Open an issue on this repo.
-
 ## Credits
 - [Arstz](https://github.com/Arstz) — original author of Forza Livery Studio, which this project is a fork of.
 - [Fr4g3z](https://github.com/Fr4g3z) - cool guy, helped a lot, complained a lot, format reversing.
@@ -95,6 +89,5 @@ Group import/export is fully supported and the core functionality is in place. L
 - Zloysvin - shape renamer
 - [Pengyss](https://github.com/Pengyss) - non-uniform group tranform algorithm
 - Eaterrius - big money man, provided tokens
-- All the people's liveries/groups I used to decode the format
 
 This fork is maintained by [ttolerantss](https://github.com/ttolerantss).
