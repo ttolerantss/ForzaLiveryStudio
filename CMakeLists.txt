@@ -131,6 +131,11 @@ target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET}
         Qt6::OpenGLWidgets
 )
 
+# Build as a GUI-subsystem app so launching the exe does not open a console window.
+set_target_properties(${FORZA_LIVERY_STUDIO_TARGET} PROPERTIES
+    WIN32_EXECUTABLE TRUE
+)
+
 set(FH6_GUI_ASSETS
     Cursor.xpm
     MenuCopy.xpm
@@ -210,10 +215,33 @@ add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
 
 if(WIN32)
     target_link_libraries(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE windowscodecs ole32)
+
+    # Resolve the Qt plugins/bin directories in a layout-independent way. vcpkg
+    # places them at <prefix>/Qt6/plugins and <prefix>/bin, while a standard Qt
+    # install (e.g. the official installer or aqtinstall) uses <qt>/plugins and
+    # <qt>/bin. Search both layouts relative to Qt6_DIR.
+    find_path(FH6_QT_PLUGIN_DIR
+        NAMES platforms/qwindows.dll platforms/qwindowsd.dll
+        HINTS
+            "${Qt6_DIR}/../../Qt6/plugins"
+            "${Qt6_DIR}/../../../plugins"
+        NO_DEFAULT_PATH
+    )
+    if(NOT FH6_QT_PLUGIN_DIR)
+        message(FATAL_ERROR "Could not locate the Qt plugins directory relative to Qt6_DIR=${Qt6_DIR}")
+    endif()
+    find_path(FH6_QT_RUNTIME_BIN_DIR
+        NAMES Qt6Core.dll Qt6Cored.dll
+        HINTS
+            "${Qt6_DIR}/../../bin"
+            "${Qt6_DIR}/../../../bin"
+        NO_DEFAULT_PATH
+    )
+
     add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
         COMMAND "${CMAKE_COMMAND}" -E make_directory "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/platforms"
         COMMAND "${CMAKE_COMMAND}" -E copy_if_different
-            "${Qt6_DIR}/../../Qt6/plugins/platforms/qwindows.dll"
+            "${FH6_QT_PLUGIN_DIR}/platforms/qwindows.dll"
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/platforms/qwindows.dll"
         COMMENT "Deploying Qt platform plugin for ${FORZA_LIVERY_STUDIO_TARGET}"
     )
@@ -222,7 +250,7 @@ if(WIN32)
             "$<TARGET_FILE_DIR:${FORZA_LIVERY_STUDIO_TARGET}>/imageformats/qico.dll"
         COMMENT "Removing redundant Qt ICO imageformat plugin"
     )
-    set(QT_WEBP_PLUGIN "${Qt6_DIR}/../../Qt6/plugins/imageformats/qwebp.dll")
+    set(QT_WEBP_PLUGIN "${FH6_QT_PLUGIN_DIR}/imageformats/qwebp.dll")
     if(NOT EXISTS "${QT_WEBP_PLUGIN}")
         message(FATAL_ERROR "Qt WebP imageformat plugin was not found. Install qtimageformats with the webp feature, e.g. vcpkg install qtimageformats[webp]:x64-windows")
     endif()
@@ -234,11 +262,13 @@ if(WIN32)
         COMMENT "Deploying Qt WEBP imageformat plugin"
     )
     set(QT_WEBP_RUNTIME_DLLS)
-    foreach(webp_dll IN ITEMS libwebp.dll libwebpdecoder.dll libwebpdemux.dll libwebpmux.dll libsharpyuv.dll)
-        if(EXISTS "${Qt6_DIR}/../../bin/${webp_dll}")
-            list(APPEND QT_WEBP_RUNTIME_DLLS "${Qt6_DIR}/../../bin/${webp_dll}")
-        endif()
-    endforeach()
+    if(FH6_QT_RUNTIME_BIN_DIR)
+        foreach(webp_dll IN ITEMS libwebp.dll libwebpdecoder.dll libwebpdemux.dll libwebpmux.dll libsharpyuv.dll)
+            if(EXISTS "${FH6_QT_RUNTIME_BIN_DIR}/${webp_dll}")
+                list(APPEND QT_WEBP_RUNTIME_DLLS "${FH6_QT_RUNTIME_BIN_DIR}/${webp_dll}")
+            endif()
+        endforeach()
+    endif()
     if(QT_WEBP_RUNTIME_DLLS)
         add_custom_command(TARGET ${FORZA_LIVERY_STUDIO_TARGET} POST_BUILD
             COMMAND "${CMAKE_COMMAND}" -E copy_if_different
