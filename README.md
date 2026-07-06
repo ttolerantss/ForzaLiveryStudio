@@ -11,12 +11,17 @@ A standalone C++/Qt editor for Forza vinyl groups (and, in the future, *probably
 ## What's different in this fork
 This fork keeps all of the original functionality and focuses on making the editing experience and interface behave like Illustrator.
 
+<p align="center">
+  <img src="screenshot.png" alt="The Forza Livery Studio editor" width="100%">
+</p>
+
 **Interface**
 - The `.exe` launches as a normal windowed app — no extra console window.
 - Custom title bar: the minimize / maximize / close buttons sit on the menu-bar row next to the app logo. Native resizing, Aero Snap and maximize still work.
 - App logo shown at the top-left of the menu bar.
 - Tools moved into a narrow, icon-only strip down the left side.
 - Panels rearranged: **Layers** on the left, **Properties** on the right, **Shapes** full-width along the bottom.
+- The **Shapes** browser scrolls one full row of shapes at a time, so a scroll never stops halfway between rows.
 - A new flat dark theme in place of the default Windows look (grey chrome, blue accents).
 
 **Selection & editing**
@@ -25,6 +30,11 @@ This fork keeps all of the original functionality and focuses on making the edit
 - **Shift + click** to add/remove objects from the selection.
 - **Ctrl + click** to select a single object inside a group instead of the whole group.
 - Pixel-accurate selection and hover based on each shape's real geometry (not its bounding box), with a blue outline of the shape under the cursor.
+- **Flip Horizontal / Flip Vertical** the selection about its centre — from the Properties panel, the Edit menu, or **Shift + H** / **Shift + V**. A whole group flips as a unit.
+- The Properties panel's transform fields (position, scale, rotation, skew) update **live** while you move, scale, or rotate a shape on the canvas.
+
+**Guides**
+- Bring in a raster image as a guide/template layer, then **lock or hide** it to make it a passive backdrop — it won't block selecting or marqueeing objects over it.
 
 **Navigation**
 - **Scroll** pans up/down, **Ctrl + scroll** pans left/right, **Alt + scroll** zooms toward the cursor.
