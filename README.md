@@ -30,7 +30,7 @@ This fork keeps all of the original functionality and focuses on making the edit
 - **Shift + click** to add/remove objects from the selection.
 - **Ctrl + click** to select a single object inside a group instead of the whole group.
 - Pixel-accurate selection and hover based on each shape's real geometry (not its bounding box), with a blue outline of the shape under the cursor.
-- **Flip Horizontal / Flip Vertical** the selection about its centre — from the Properties panel, the Edit menu, or **Shift + H** / **Shift + V**. A whole group flips as a unit.
+- **Flip Horizontal / Flip Vertical** the selection about its center — from the Properties panel, the Edit menu, or **Shift + H** / **Shift + V**. A whole group flips as a unit.
 - The Properties panel's transform fields (position, scale, rotation, skew) update **live** while you move, scale, or rotate a shape on the canvas.
 
 **Guides**
