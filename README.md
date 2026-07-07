@@ -20,18 +20,31 @@ This fork keeps all of the original functionality and focuses on making the edit
 - Custom title bar: the minimize / maximize / close buttons sit on the menu-bar row next to the app logo. Native resizing, Aero Snap and maximize still work.
 - App logo shown at the top-left of the menu bar.
 - Tools moved into a narrow, icon-only strip down the left side.
-- Panels rearranged: **Layers** on the left, **Properties** on the right, **Shapes** full-width along the bottom.
-- The **Shapes** browser scrolls one full row of shapes at a time, so a scroll never stops halfway between rows.
+- Panels rearranged: **Layers** on the left, **Properties** and a new **Color** panel on the right, **Shapes** full-width along the bottom. Each right-side panel opens sized to its content, with a thin divider between sections.
+- A dockable **Color** panel (Illustrator-style): recent colours, R/G/B sliders with live gradient tracks, a hex field, and a hue/value spectrum. Double-click the fill swatch or a recent colour to open the full colour picker. Edits apply live to the selection as a single undo step.
+- The **Shapes** browser shows flat tiles and scrolls one full row of shapes at a time, so a scroll never stops halfway between rows.
 - A new flat dark theme in place of the default Windows look (grey chrome, blue accents).
 
 **Selection & editing**
-- One unified **Select** tool that selects, moves *and* transforms — scale/rotate/skew handles appear on the artboard around the selection, so there's no need to switch to a separate transform tool.
+- One unified **Select** tool that selects, moves *and* transforms — scale/rotate/skew handles appear on the artboard around the selection, so there's no need to switch to a separate transform tool. The transform box hides while you drag to move and reappears on release.
 - Click-drag on empty canvas draws a **marquee** selection.
 - **Shift + click** to add/remove objects from the selection.
 - **Ctrl + click** to select a single object inside a group instead of the whole group.
 - Pixel-accurate selection and hover based on each shape's real geometry (not its bounding box), with a blue outline of the shape under the cursor.
-- **Flip Horizontal / Flip Vertical** the selection about its center — from the Properties panel, the Edit menu, or **Shift + H** / **Shift + V**. A whole group flips as a unit.
+- Dragging a multi-selection moves every selected object together, and a selected object stays draggable even when another object overlaps on top of it.
+- **Right-click** the canvas for quick actions: Group, Ungroup, Flip Horizontal/Vertical, Rotate 90° CW/CCW, Lock Selection, Unlock All.
+- **Flip Horizontal / Flip Vertical** performs a true mirror (an unrotated shape stays at rotation 0), and **Rotate 90°** turns the selection about its center. A whole group flips/rotates as a unit.
 - The Properties panel's transform fields (position, scale, rotation, skew) update **live** while you move, scale, or rotate a shape on the canvas.
+
+**Isolation mode**
+- **Double-click a group** to enter isolation: only that group's objects are editable, everything behind it is uniformly dimmed, and any layers stacked above it are hidden.
+- Inside the group, objects **select individually** — no need to ungroup to edit a single piece.
+- **Double-click deeper** to step into nested sub-groups; **Esc** (or double-click empty space) steps back out one level.
+
+**Grouping & organising**
+- **Group** (**Ctrl + G**) and **Ungroup** are separate actions — Ctrl+G only ever groups; Ungroup lives in the Edit and right-click menus (no shortcut, so it's never triggered by accident). Any two or more shapes that share a parent can be grouped, even if they aren't adjacent in the stack.
+- **Lock** objects so they can't be picked on the canvas — clicks pass straight through to whatever is above or below them. **Ctrl + 2** locks the selection, **Ctrl + 3** unlocks everything.
+- **Ctrl + J** duplicates the selection, and **Paste** always lands in front of the original.
 
 **Guides**
 - Bring in a raster image as a guide/template layer, then **lock or hide** it to make it a passive backdrop — it won't block selecting or marqueeing objects over it.
@@ -39,6 +52,18 @@ This fork keeps all of the original functionality and focuses on making the edit
 **Navigation**
 - **Scroll** pans up/down, **Ctrl + scroll** pans left/right, **Alt + scroll** zooms toward the cursor.
 - Space-drag or middle-mouse to pan.
+
+**Keyboard shortcuts**
+
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl + G` | Group selection |
+| `Ctrl + J` | Duplicate |
+| `Ctrl + 2` / `Ctrl + 3` | Lock selection / Unlock all |
+| `Shift + H` / `Shift + V` | Flip horizontal / vertical |
+| Double-click group · `Esc` | Enter isolation mode · exit one level |
+| `Y` | Stamp (duplicate in place) |
+| `Ctrl + Z` / `Ctrl + Y` | Undo / Redo |
 
 ## Features (from the original)
 - Import/export to Forza's proprietary binary format
