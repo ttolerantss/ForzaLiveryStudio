@@ -2123,30 +2123,21 @@ void MainWindow::groupOrUngroupSelection()
         statusBar()->showMessage(QStringLiteral("Select at least two layers to group"), 3000);
         return;
     }
+    // All members must share a parent (guides are already excluded above). They need
+    // not be adjacent - grouping gathers them together at the topmost selected slot.
     const QString parentId = state_->parentGroupForEntry(entries.front());
     const QVector<QString> *siblings = state_->childListForParent(parentId);
     if (siblings == nullptr) {
         statusBar()->showMessage(QStringLiteral("Selection cannot be grouped"), 3000);
         return;
     }
-    QVector<int> orders;
-    orders.reserve(entries.size());
     for (const QString &entryId : entries) {
         if (state_->parentGroupForEntry(entryId) != parentId) {
-            statusBar()->showMessage(QStringLiteral("Only direct sibling layers can be grouped"), 3000);
+            statusBar()->showMessage(QStringLiteral("Only sibling layers can be grouped together"), 3000);
             return;
         }
-        const int order = siblings->indexOf(entryId);
-        if (order < 0) {
+        if (siblings->indexOf(entryId) < 0) {
             statusBar()->showMessage(QStringLiteral("Selection cannot be grouped"), 3000);
-            return;
-        }
-        orders.push_back(order);
-    }
-    std::sort(orders.begin(), orders.end());
-    for (int i = 1; i < orders.size(); ++i) {
-        if (orders[i] != orders[i - 1] + 1) {
-            statusBar()->showMessage(QStringLiteral("Select adjacent sibling layers to group"), 3000);
             return;
         }
     }

@@ -54,14 +54,13 @@ void EditorState::groupEntries(const QVector<QString> &entryIds)
         }
         insertAt = std::min(insertAt, order);
     }
+    // Keep the grouped children in their existing z-order. They need not be adjacent:
+    // grouping pulls them out of their current slots and gathers them into the new
+    // group at the topmost selected slot (Illustrator-style), so a non-contiguous
+    // selection groups fine.
     std::sort(entries.begin(), entries.end(), [&](const QString &a, const QString &b) {
         return maps.orderByChild.value(a, 0) < maps.orderByChild.value(b, 0);
     });
-    for (int i = 1; i < entries.size(); ++i) {
-        if (maps.orderByChild.value(entries[i], -1) != maps.orderByChild.value(entries[i - 1], -1) + 1) {
-            return;
-        }
-    }
 
     QSet<QString> groupedIds;
     QSet<QString> selectedLeaves;

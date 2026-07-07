@@ -1157,7 +1157,13 @@ void ProjectCanvas::setTransformChangedCallback(std::function<void()> fn)
 
 // Explicit one-shot mirror of the selection about its combined centre.
 // horizontal = left/right (mirror x positions), otherwise top/bottom (mirror y).
-// Uses the same rotate-complement + scale-sign decomposition as cycleFlipSelection.
+//
+// A world-axis reflection F composed with an item's rotate-shear-scale transform
+// decomposes cleanly as: negate the flip-axis scale, negate the rotation, negate the
+// skew, and mirror the position about the selection centre. (Equivalently, since
+// diag(-1,1)*R(t) == R(-t)*diag(-1,1).) This keeps rotation natural - a horizontal
+// flip of an unrotated shape stays at rotation 0 instead of becoming 180 with a
+// negative scale, which previously read as the shape rotating rather than mirroring.
 void ProjectCanvas::flipSelection(bool horizontal)
 {
     if (state_ == nullptr || project_ == nullptr) {
@@ -1170,9 +1176,6 @@ void ProjectCanvas::flipSelection(bool horizontal)
     }
 
     const QPointF center = selectedWorldBounds().center();
-    const auto complementRotation = [](double rotation) {
-        return normalizeRotation(180.0 - rotation);
-    };
 
     state_->beginTransformCommand();
     // Detach from the undo snapshot before mutating through resolved pointers.
@@ -1184,26 +1187,23 @@ void ProjectCanvas::flipSelection(bool horizontal)
     for (fh6::ShapeLayer *layer : layers) {
         if (horizontal) {
             layer->x = 2.0 * center.x() - layer->x;
-            layer->scaleY = -layer->scaleY;
-            layer->skew = -layer->skew;
-            layer->rotation = complementRotation(layer->rotation);
+            layer->scaleX = -layer->scaleX;
         } else {
             layer->y = 2.0 * center.y() - layer->y;
-            layer->scaleX = -layer->scaleX;
-            layer->skew = -layer->skew;
-            layer->rotation = complementRotation(layer->rotation);
+            layer->scaleY = -layer->scaleY;
         }
+        layer->skew = -layer->skew;
+        layer->rotation = normalizeRotation(-layer->rotation);
     }
     for (fh6::GuideLayer *guide : guides) {
         if (horizontal) {
             guide->x = 2.0 * center.x() - guide->x;
-            guide->scaleY = -guide->scaleY;
-            guide->rotation = complementRotation(guide->rotation);
+            guide->scaleX = -guide->scaleX;
         } else {
             guide->y = 2.0 * center.y() - guide->y;
-            guide->scaleX = -guide->scaleX;
-            guide->rotation = complementRotation(guide->rotation);
+            guide->scaleY = -guide->scaleY;
         }
+        guide->rotation = normalizeRotation(-guide->rotation);
     }
 
     state_->commitTransformCommand();
@@ -2406,12 +2406,18 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
         if (!additive
             && (!state_->selectedLayerIds().isEmpty() || !state_->selectedGuideLayerIds().isEmpty())) {
             const SelectionBox box = currentSelectionBox();
-            const QString hit = selectTargetAtScreenPoint(event->position(), {});
-            const bool onSelectedShape = !hit.isEmpty() && state_->selectedLayerIds().contains(hit);
-            selectPressOnBox_ = box.valid
-                && (!transformHandleAt(event->position(), box).isEmpty()
-                    || rotateZoneAt(event->position(), box)
-                    || onSelectedShape);
+            // "On the selection" when the topmost shape under the cursor is already
+            // selected: pressing it drags the whole (possibly multi-) selection instead
+            // of re-picking a single shape. Use the raw topmost hit, not
+            // selectTargetAtScreenPoint(), which cycles to the *next* overlapping shape
+            // when the top one is selected and so would drop the multi-selection.
+            const QVector<QString> hitsUnder = layersAtScreenPoint(event->position());
+            const bool onSelectedShape = !hitsUnder.isEmpty()
+                && state_->selectedLayerIds().contains(hitsUnder.front());
+            selectPressOnBox_ = onSelectedShape
+                || (box.valid
+                    && (!transformHandleAt(event->position(), box).isEmpty()
+                        || rotateZoneAt(event->position(), box)));
         }
         if (!selectPressOnBox_) {
             const QString target = selectTargetAtScreenPoint(event->position(), {});
