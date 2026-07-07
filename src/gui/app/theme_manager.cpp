@@ -248,11 +248,20 @@ QScrollBar::handle:horizontal:hover { background: #4d4d4d; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; background: none; border: none; }
 QScrollBar::add-page, QScrollBar::sub-page { background: none; }
 
-/* Dock titles + splitters */
-QDockWidget::title { background: #202020; padding: 6px 8px; border: none; }
+/* Dock titles + splitters. The title bar matches the panel body; the thin divider
+   between stacked panels is a real 1px QFrame added in MainWindow::addPanelDock
+   (Qt's dock style renders neither a thin separator nor a CSS border here). */
+QDockWidget::title { background: #262626; padding: 6px 8px; border: none; }
 QSplitter::handle { background: #2e2e2e; }
 QSplitter::handle:horizontal { width: 3px; }
 QSplitter::handle:vertical { height: 3px; }
+
+/* Separators blend into the chrome (no visible band) but stay grabbable to
+   resize; the visible division is the title's 1px top line above. */
+QMainWindow::separator { background: #262626; border: none; }
+QMainWindow::separator:vertical { width: 5px; }
+QMainWindow::separator:horizontal { height: 5px; }
+QMainWindow::separator:hover { background: #1482f0; }
 
 /* Group boxes */
 QGroupBox { border: 1px solid #3a3a3a; border-radius: 6px; margin-top: 8px; padding-top: 8px; }

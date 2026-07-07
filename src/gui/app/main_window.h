@@ -33,6 +33,7 @@ namespace gui {
 
 class ClipboardBufferWidget;
 class EditorState;
+class ColorPanel;
 class HeaderMetadataWidget;
 class LiverySectionBar;
 class PropertyPanel;
@@ -135,6 +136,9 @@ private:
     // Tree-aware selection helpers: resolve the tree's entry selection against state_.
     QVector<fh6::LayerGroup *> selectedGroups();
     void refreshSelectionProperties();
+    // Give the stacked right-column panels sensible default heights (Properties tall
+    // enough to show its fields) rather than the even split splitDockWidget produces.
+    void applyDefaultRightDockSizes();
     bool copySelectionToClipboard();
     bool ensureProjectForInsertion();
     enum class ExternalDropKind {
@@ -181,6 +185,12 @@ private:
     HeaderMetadataWidget *headerMetadata_ = nullptr;
     QDockWidget *headerMetadataDock_ = nullptr;
     PropertyPanel *properties_ = nullptr;
+    ColorPanel *colorPanel_ = nullptr;
+    QDockWidget *propertiesDock_ = nullptr;
+    QDockWidget *colorDock_ = nullptr;
+    QDockWidget *projectDock_ = nullptr;
+    bool layoutRestored_ = false;
+    bool defaultDockSizesApplied_ = false;
     LayerTreeModel *treeModel_ = nullptr;
     QMenu *recentProjectMenu_ = nullptr;
     QString creatorName_;

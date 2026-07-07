@@ -89,6 +89,8 @@ qt_add_executable(${FORZA_LIVERY_STUDIO_TARGET}
     src/gui/canvas/project_canvas.cpp
     src/gui/canvas/project_canvas.h
     src/gui/widgets/clipboard_buffer_widget.cpp
+    src/gui/widgets/color_panel.cpp
+    src/gui/widgets/color_panel.h
     src/gui/widgets/clipboard_buffer_widget.h
     src/gui/widgets/font_glyphs.cpp
     src/gui/widgets/font_glyphs.h

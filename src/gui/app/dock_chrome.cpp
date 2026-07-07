@@ -6,6 +6,7 @@
 #include <QCursor>
 #include <QDockWidget>
 #include <QEvent>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
@@ -34,13 +35,31 @@ void setDockTitleIcon(QDockWidget *dock, const QString &iconName)
     dock->setWindowIcon(icon);
     dock->setProperty(DockIconNameProperty, iconName);
 
+    // The title bar is a vertical stack: a 1px divider line on top, then the icon /
+    // title / buttons row. The line sits flush at the top of each panel's header so
+    // stacked panels are clearly divided (Qt's dock style renders neither a thin
+    // separator nor a CSS border, so the line has to be a real widget).
     auto *titleBar = new QWidget(dock);
-    auto *layout = new QHBoxLayout(titleBar);
+    auto *outer = new QVBoxLayout(titleBar);
+    // A small gap above the divider so it never butts against the last row of the
+    // panel above it.
+    outer->setContentsMargins(0, 2, 0, 0);
+    outer->setSpacing(0);
+
+    auto *divider = new QFrame(titleBar);
+    divider->setObjectName(QStringLiteral("DockTitleDivider"));
+    divider->setFixedHeight(1);
+    divider->setStyleSheet(QStringLiteral("background: #585858;"));
+    outer->addWidget(divider);
+
+    auto *row = new QWidget(titleBar);
+    outer->addWidget(row);
+    auto *layout = new QHBoxLayout(row);
     layout->setContentsMargins(6, 2, 4, 2);
     layout->setSpacing(5);
     titleBar->setProperty(DockTitleLayoutProperty, QVariant::fromValue<QObject *>(layout));
 
-    auto *iconLabel = new QLabel(titleBar);
+    auto *iconLabel = new QLabel(row);
     iconLabel->setFixedSize(18, 18);
     iconLabel->setPixmap(icon.pixmap(16, 16));
     iconLabel->setObjectName(QStringLiteral("DockTitleIconLabel"));
@@ -130,6 +149,16 @@ void configureDockAreaCollapseButton(QToolButton *button, Qt::DockWidgetArea are
     button->setIcon(QIcon());
     button->setText(dockAreaCollapseText(area, collapsed));
     button->setToolTip(collapsed ? QStringLiteral("Restore dock area") : QStringLiteral("Collapse dock area"));
+}
+
+void setDockTitleDividerVisible(QDockWidget *dock, bool visible)
+{
+    if (dock == nullptr || dock->titleBarWidget() == nullptr) {
+        return;
+    }
+    if (auto *divider = dock->titleBarWidget()->findChild<QFrame *>(QStringLiteral("DockTitleDivider"))) {
+        divider->setVisible(visible);
+    }
 }
 
 void refreshDockTitleIcon(QDockWidget *dock)

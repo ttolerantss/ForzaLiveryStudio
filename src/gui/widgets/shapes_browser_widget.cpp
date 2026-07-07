@@ -338,19 +338,16 @@ void ShapeTile::paintEvent(QPaintEvent *event)
     painter.setRenderHint(QPainter::Antialiasing, true);
     const QRect tileRect = rect().adjusted(2, 2, -2, -2);
     const bool dark = isDarkTheme(currentUiTheme());
-    const QColor tileBase = dark ? QColor(34, 34, 34) : QColor(232, 235, 240);
     const QColor tileHover = dark ? QColor(42, 42, 42) : QColor(218, 223, 231);
-    const QColor stroke = dark ? QColor(68, 68, 68) : QColor(145, 153, 166);
-    const QColor hoverStroke = dark ? QColor(119, 119, 119) : QColor(96, 107, 124);
-    const QColor previewBase = dark ? QColor(21, 21, 21) : QColor(248, 249, 251);
     const QColor labelColor = dark ? QColor(238, 238, 238) : QColor(32, 34, 37);
 
-    painter.fillRect(tileRect, hovered_ ? tileHover : tileBase);
-    painter.setPen(QPen(hovered_ ? hoverStroke : stroke, 1));
-    painter.drawRect(tileRect.adjusted(0, 0, -1, -1));
+    // No tile background or preview box: a shape sits directly on the panel so the
+    // grid reads flat. Only a hovered tile gets a subtle fill for feedback.
+    if (hovered_) {
+        painter.fillRect(tileRect, tileHover);
+    }
 
     const QRect previewRect((width() - PreviewSize.width()) / 2, 12, PreviewSize.width(), PreviewSize.height());
-    painter.fillRect(previewRect, previewBase);
     drawPreview(painter, previewRect);
 
     const QRect labelRect(8, height() - 30, width() - 40, 22);
@@ -755,22 +752,17 @@ void CustomGroupTile::paintEvent(QPaintEvent *event)
     painter.setRenderHint(QPainter::Antialiasing, true);
     const QRect tileRect = rect().adjusted(2, 2, -2, -2);
     const bool dark = isDarkTheme(currentUiTheme());
-    const QColor tileBase = dark ? QColor(34, 34, 34) : QColor(232, 235, 240);
     const QColor tileHover = dark ? QColor(42, 42, 42) : QColor(218, 223, 231);
-    const QColor stroke = dark ? QColor(68, 68, 68) : QColor(145, 153, 166);
-    const QColor hoverStroke = dark ? QColor(119, 119, 119) : QColor(96, 107, 124);
     const QColor labelColor = dark ? QColor(238, 238, 238) : QColor(32, 34, 37);
-    const QColor previewBase = dark ? QColor(21, 21, 21) : QColor(248, 249, 251);
 
-    painter.fillRect(tileRect, hovered_ ? tileHover : tileBase);
-    painter.setPen(QPen(hovered_ ? hoverStroke : stroke, 1));
-    painter.drawRect(tileRect.adjusted(0, 0, -1, -1));
+    // No tile background or preview box (matches ShapeTile): only a hovered tile
+    // gets a subtle fill for feedback.
+    if (hovered_) {
+        painter.fillRect(tileRect, tileHover);
+    }
 
     const QRect previewRect((width() - PreviewSize.width()) / 2, 12, PreviewSize.width(), PreviewSize.height());
-    painter.fillRect(previewRect, previewBase);
     drawPreview(painter, previewRect);
-    painter.setPen(QPen(dark ? QColor(78, 78, 78) : QColor(180, 186, 196), 1));
-    painter.drawRect(previewRect.adjusted(0, 0, -1, -1));
 
     const QRect countRect(width() - 42, 8, 30, 18);
     painter.fillRect(countRect, dark ? QColor(58, 58, 58) : QColor(210, 216, 226));

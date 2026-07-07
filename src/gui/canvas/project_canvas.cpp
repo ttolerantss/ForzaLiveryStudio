@@ -786,8 +786,14 @@ QVector<QString> ProjectCanvas::layersAtScreenPoint(const QPointF &point)
     if (project_ == nullptr) {
         return ids;
     }
+    // Locked layers (locked directly or via a locked group) are not pickable, so a
+    // click passes through them to whatever is above/below. lockedLayerIds() is cached.
+    const QSet<QString> locked = state_ != nullptr ? state_->lockedLayerIds() : QSet<QString>();
     for (const HitEntry &entry : hitEntries()) {
         if (entry.layerIndex < 0 || entry.layerIndex >= static_cast<int>(project_->layers.size())) {
+            continue;
+        }
+        if (locked.contains(entry.layerId)) {
             continue;
         }
         // Cheap quad-bounds reject, then a precise test against the shape's art.
@@ -1892,7 +1898,11 @@ void ProjectCanvas::drawOverlay(QPainter &painter)
     }
 
     const SelectionBox box = currentSelectionBox();
-    if (box.valid && !box.localRect.isEmpty()) {
+    // While dragging the selection to move it, hide the whole transform box (frame and
+    // handles) so only the moving art shows, the way Illustrator does; it reappears on
+    // release when the drag ends.
+    const bool movingSelection = dragMode_ == DragMode::Move || dragMode_ == DragMode::TransformMove;
+    if (box.valid && !box.localRect.isEmpty() && !movingSelection) {
         const QTransform toScreen = boxToScreen(box);
         const QRectF &lr = box.localRect;
         const QPointF topLeft = toScreen.map(lr.topLeft());
@@ -2064,10 +2074,15 @@ void ProjectCanvas::selectByMarquee(Qt::KeyboardModifiers modifiers)
         ? state_->selectedLayerIds()
         : QSet<QString>{};
     // Select any shape the marquee touches (intersects its actual art), so
-    // dragging over even a small part of a shape selects it.
+    // dragging over even a small part of a shape selects it. Locked layers are
+    // skipped so a marquee never grabs them.
     const QRectF marquee = marqueeRect_.normalized();
+    const QSet<QString> locked = state_ != nullptr ? state_->lockedLayerIds() : QSet<QString>();
     for (const HitEntry &entry : hitEntries()) {
         if (entry.layerIndex < 0 || entry.layerIndex >= static_cast<int>(project_->layers.size())) {
+            continue;
+        }
+        if (locked.contains(entry.layerId)) {
             continue;
         }
         if (entry.screenBounds.intersects(marquee)

@@ -1,6 +1,7 @@
 #include "main_window.h"
 
 #include "clipboard_buffer_widget.h"
+#include "color_panel.h"
 #include "dock_chrome.h"
 #include "fh6_core.h"
 #include "gui_assets.h"
@@ -44,6 +45,10 @@
 #include <QEvent>
 #include <QEventLoop>
 #include <QFile>
+#include <QFrame>
+#include <QMargins>
+#include <QScrollArea>
+#include <QScrollBar>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFont>
@@ -89,6 +94,7 @@
 #include <QToolBar>
 #include <QToolButton>
 #include <QTransform>
+#include <QTimer>
 #include <QTreeView>
 #include <QUrl>
 #include <QVBoxLayout>
@@ -126,7 +132,7 @@ constexpr int CaptionButtonWidth = 44;  // min/max/close button size on the menu
 constexpr int CaptionButtonHeight = 28;
 // Bumped whenever the default dock arrangement changes so a previously saved
 // layout from an older version is ignored (restoreState() rejects a mismatch).
-constexpr int LayoutStateVersion = 2;
+constexpr int LayoutStateVersion = 4;
 constexpr int DockSplitterHandleWidth = 6;
 constexpr int DetailsLabelMargin = 10;
 
@@ -221,7 +227,7 @@ MainWindow::MainWindow(QWidget *parent)
     // Capture the freshly built layout so Reset Layout can return to it, then
     // restore any previously saved layout (mirrors the Python _restore_layout).
     defaultLayoutState_ = saveState();
-    restoreLayout();
+    layoutRestored_ = restoreLayout();
     // restoreLayout() may drop docks into different areas than their install-time
     // fallback, so re-point every collapse arrow at its dock's actual area.
     syncDockCollapseButtons();
@@ -285,6 +291,61 @@ QDockWidget *MainWindow::addPanelDock(const QString &title, const QString &objec
     return dock;
 }
 
+namespace {
+
+// A scroll area that reports its content's preferred size as its own size hint, so
+// the wrapped panel's dock opens at the panel's natural width/height instead of the
+// tiny default a plain QScrollArea reports. Its minimum stays small so it can scroll
+// (rather than overflow) when the dock is squeezed shorter than the content.
+class PanelScrollArea final : public QScrollArea {
+public:
+    using QScrollArea::QScrollArea;
+
+    QSize sizeHint() const override
+    {
+        if (widget() != nullptr) {
+            const QSize hint = widget()->sizeHint();
+            const int barWidth = verticalScrollBar() != nullptr ? verticalScrollBar()->sizeHint().width() : 0;
+            return QSize(hint.width() + barWidth, hint.height());
+        }
+        return QScrollArea::sizeHint();
+    }
+
+    QSize minimumSizeHint() const override
+    {
+        QSize hint = QScrollArea::minimumSizeHint();
+        if (widget() != nullptr) {
+            // Keep the panel's natural width, but let the height collapse so docks can
+            // never overlap (QMainWindow overlaps docks when it can't satisfy every
+            // minimum). Correct heights are set explicitly via resizeDocks instead.
+            hint.setWidth(widget()->sizeHint().width());
+        }
+        return hint;
+    }
+};
+
+// Wrap a tall panel so it scrolls when its dock is squeezed shorter than the panel's
+// content, instead of overflowing and overlapping the panel below it (which happens
+// on shorter screens where Properties + Color + Project can't all fit at once).
+QScrollArea *makeScrollable(QWidget *content)
+{
+    auto *scroll = new PanelScrollArea();
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // Paint the panel's own palette background (theme-aware) so the scroll viewport
+    // matches the surrounding chrome instead of showing through.
+    content->setAutoFillBackground(true);
+    // A little bottom breathing room so the panel's last row never butts against the
+    // divider/title of the panel stacked directly below it.
+    const QMargins margins = content->contentsMargins();
+    content->setContentsMargins(margins.left(), margins.top(), margins.right(), margins.bottom() + 10);
+    scroll->setWidget(content);
+    return scroll;
+}
+
+} // namespace
+
 void MainWindow::setupDocks()
 {
     // Let the bottom dock area span the full window width (for the Shapes browser)
@@ -330,15 +391,25 @@ void MainWindow::setupDocks()
     });
     applyBehaviorSettings(loadBehaviorSettings(), false);
     auto *propertiesDock = addPanelDock(QStringLiteral("Properties"), QStringLiteral("PropertiesDock"),
-                                        QStringLiteral("WidgetProperties.xpm"), Qt::RightDockWidgetArea, properties_);
+                                        QStringLiteral("WidgetProperties.xpm"), Qt::RightDockWidgetArea,
+                                        makeScrollable(properties_));
+
+    // Illustrator-style Color panel: its own row directly below Properties (not
+    // tabbed with it).
+    colorPanel_ = new ColorPanel(state_, this);
+    auto *colorDock = addPanelDock(QStringLiteral("Color"), QStringLiteral("ColorDock"),
+                                   QStringLiteral("PropertyColor.xpm"), Qt::RightDockWidgetArea,
+                                   makeScrollable(colorPanel_));
+    splitDockWidget(propertiesDock, colorDock, Qt::Vertical);
 
     details_ = new QLabel(this);
     details_->setMargin(DetailsLabelMargin);
     details_->setWordWrap(true);
     auto *detailsDock = addPanelDock(QStringLiteral("Project"), QStringLiteral("ProjectDock"),
                                      QStringLiteral("WidgetProject.xpm"), Qt::RightDockWidgetArea, details_);
-    splitDockWidget(propertiesDock, detailsDock, Qt::Vertical);
+    splitDockWidget(colorDock, detailsDock, Qt::Vertical);
 
+    // Only Project and Header share a tab group.
     headerMetadata_ = new HeaderMetadataWidget(this);
     headerMetadata_->setApplyCallback([this]() { applyHeaderMetadata(); });
     headerMetadataDock_ = addPanelDock(QStringLiteral("Header"), QStringLiteral("HeaderMetadataDock"),
@@ -351,8 +422,38 @@ void MainWindow::setupDocks()
     shapesBrowser_->setShapeSelectedCallback([this](int shapeId) { insertShape(shapeId); });
     shapesBrowser_->setCustomGroupSelectedCallback([this](const CustomShapeGroup &group) { insertCustomGroup(group.name, group.clipboard); });
     shapesBrowser_->setAddCurrentSelectionCallback([this]() { saveCurrentSelectionAsCustomGroup(); });
-    addPanelDock(QStringLiteral("Shapes"), QStringLiteral("ShapesDock"),
-                 QStringLiteral("WidgetShapesBrowser.xpm"), Qt::BottomDockWidgetArea, shapesBrowser_);
+    auto *shapesDock = addPanelDock(QStringLiteral("Shapes"), QStringLiteral("ShapesDock"),
+                                    QStringLiteral("WidgetShapesBrowser.xpm"), Qt::BottomDockWidgetArea, shapesBrowser_);
+
+    // The title-bar divider is only wanted where it separates two stacked panels in
+    // the right column (above Color and Project). Drop it on the top-of-column and
+    // standalone docks.
+    setDockTitleDividerVisible(layersDock, false);
+    setDockTitleDividerVisible(clipboardDock, false);
+    setDockTitleDividerVisible(propertiesDock, false);
+    setDockTitleDividerVisible(shapesDock, false);
+
+    propertiesDock_ = propertiesDock;
+    colorDock_ = colorDock;
+    projectDock_ = detailsDock;
+    applyDefaultRightDockSizes();
+}
+
+void MainWindow::applyDefaultRightDockSizes()
+{
+    if (propertiesDock_ == nullptr || colorDock_ == nullptr || projectDock_ == nullptr) {
+        return;
+    }
+    // Size each panel to its own content height so every field is visible by default;
+    // resizeDocks treats these as ratios, so on a tall screen the surplus is shared
+    // out and nothing is clipped.
+    const auto contentHeight = [](QDockWidget *dock) {
+        QWidget *w = dock->widget();
+        return w != nullptr ? std::max(w->sizeHint().height(), 90) : 120;
+    };
+    resizeDocks({propertiesDock_, colorDock_, projectDock_},
+                {contentHeight(propertiesDock_), contentHeight(colorDock_), contentHeight(projectDock_)},
+                Qt::Vertical);
 }
 
 void MainWindow::connectEditorStateSignals()
@@ -639,12 +740,27 @@ void MainWindow::changeEvent(QEvent *event)
     QMainWindow::changeEvent(event);
     if (event->type() == QEvent::WindowStateChange) {
         updateMaximizeButtonGlyph();
+        // Re-apply the panel heights whenever the window (un)maximizes: QMainWindow
+        // redistributes docks on that transition and would otherwise leave Properties
+        // squashed. Deferred so it runs after the maximize has settled. Skipped when
+        // the user has their own saved layout.
+        if (!layoutRestored_) {
+            QTimer::singleShot(0, this, [this]() { applyDefaultRightDockSizes(); });
+        }
     }
 }
 
 void MainWindow::showEvent(QShowEvent *event)
 {
     QMainWindow::showEvent(event);
+    // Re-apply the default panel heights once the window has its real (maximized)
+    // size, so each panel opens tall enough. Deferred to the next event-loop pass so
+    // it runs after the window has finished maximizing (resizeDocks is a no-op if the
+    // window is still at its pre-maximized size). Skipped if a saved layout exists.
+    if (!layoutRestored_ && !defaultDockSizesApplied_) {
+        defaultDockSizesApplied_ = true;
+        QTimer::singleShot(0, this, [this]() { applyDefaultRightDockSizes(); });
+    }
 #ifdef Q_OS_WIN
     if (!customFrameApplied_) {
         customFrameApplied_ = true;
@@ -821,6 +937,9 @@ void MainWindow::applyTheme(UiTheme theme, bool save)
     refreshThemedIcons();
     if (shapesBrowser_ != nullptr) {
         shapesBrowser_->refreshTheme();
+    }
+    if (colorPanel_ != nullptr) {
+        colorPanel_->refreshTheme();
     }
     if (sectionBar_ != nullptr) {
         sectionBar_->refreshTheme();
@@ -1443,7 +1562,11 @@ void MainWindow::refreshSelectionProperties()
         return;
     }
     ScopedPerf perf("refreshSelectionProperties");
-    properties_->setSelection(state_->selectedLayers(), state_->selectedGuideLayers(), selectedGroups());
+    const QVector<fh6::LayerGroup *> groups = selectedGroups();
+    properties_->setSelection(state_->selectedLayers(), state_->selectedGuideLayers(), groups);
+    if (colorPanel_ != nullptr) {
+        colorPanel_->setSelection(state_->selectedLayers(), groups);
+    }
 }
 
 void MainWindow::deleteSelectedLayers()

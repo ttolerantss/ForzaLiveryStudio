@@ -11,6 +11,9 @@ namespace gui {
 // Installs a custom dock title bar with an asset icon plus float/close buttons.
 void setDockTitleIcon(QDockWidget *dock, const QString &iconName);
 void refreshDockTitleIcon(QDockWidget *dock);
+// Shows/hides the 1px divider line at the top of a dock's title bar (used to keep it
+// only where it divides two stacked panels).
+void setDockTitleDividerVisible(QDockWidget *dock, bool visible);
 QToolButton *addDockAreaCollapseButton(QDockWidget *dock);
 
 // Arrow glyph for a dock-area collapse button given its area and collapsed state,
