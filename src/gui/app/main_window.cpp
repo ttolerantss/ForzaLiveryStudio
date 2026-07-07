@@ -239,6 +239,9 @@ void MainWindow::setupCanvas()
 {
     canvas_ = new ProjectCanvas(this);
     canvas_->setEditorState(state_);
+    // Right-click on the artboard opens a quick actions menu (group, flip, rotate, lock).
+    canvas_->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(canvas_, &QWidget::customContextMenuRequested, this, &MainWindow::showCanvasContextMenu);
     canvas_->setTransformRelativeMode(!loadTransformModeSettings().relativeMode);
     applyBehaviorSettings(loadBehaviorSettings(), false);
     QString geometryError;
@@ -564,8 +567,10 @@ void MainWindow::setupEditMenu()
                  QKeySequence::Cut, QStringLiteral("MenuCut.xpm"), &MainWindow::cutSelection);
     addEditEntry(QStringLiteral("&Paste"), QStringLiteral("paste"), QStringLiteral("Paste"),
                  QKeySequence::Paste, QStringLiteral("MenuPaste.xpm"), &MainWindow::pasteClipboard);
-    addEditEntry(QStringLiteral("&Group / Ungroup"), QStringLiteral("group_ungroup"), QStringLiteral("Group / Ungroup"),
-                 QKeySequence(Qt::CTRL | Qt::Key_G), QStringLiteral("MenuGroup.xpm"), &MainWindow::groupOrUngroupSelection);
+    addEditEntry(QStringLiteral("&Group"), QStringLiteral("group"), QStringLiteral("Group"),
+                 QKeySequence(Qt::CTRL | Qt::Key_G), QStringLiteral("MenuGroup.xpm"), &MainWindow::groupSelection);
+    addEditEntry(QStringLiteral("&Ungroup"), QStringLiteral("ungroup"), QStringLiteral("Ungroup"),
+                 QKeySequence(), QStringLiteral("MenuUngroupFlat.xpm"), &MainWindow::ungroupSelection);
     addEditEntry(QStringLiteral("Ungroup &Flat"), QStringLiteral("ungroup_flat"), QStringLiteral("Ungroup Flat"),
                  QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G), QStringLiteral("MenuUngroupFlat.xpm"), &MainWindow::ungroupSelectionFlat);
     addEditEntry(QStringLiteral("Fold All Groups"), QStringLiteral("fold_all_groups"), QStringLiteral("Fold All Groups"),
@@ -580,8 +585,15 @@ void MainWindow::setupEditMenu()
                  QKeySequence(Qt::SHIFT | Qt::Key_V), QStringLiteral("ToolbarScale.xpm"),
                  [this]() { if (canvas_ != nullptr) { canvas_->flipSelection(false); } });
     editMenu->addSeparator();
+    addEditEntry(QStringLiteral("&Duplicate"), QStringLiteral("duplicate"), QStringLiteral("Duplicate"),
+                 QKeySequence(Qt::CTRL | Qt::Key_J), QStringLiteral("MenuPaste.xpm"), &MainWindow::stampSelection);
     addEditEntry(QStringLiteral("Stamp (Duplicate in Place)"), QStringLiteral("stamp"), QStringLiteral("Stamp"),
                  QKeySequence(Qt::Key_Y), QStringLiteral("MenuPaste.xpm"), &MainWindow::stampSelection);
+    editMenu->addSeparator();
+    addEditEntry(QStringLiteral("&Lock Selection"), QStringLiteral("lock_selection"), QStringLiteral("Lock Selection"),
+                 QKeySequence(Qt::CTRL | Qt::Key_2), QStringLiteral("PropertyLocked.xpm"), &MainWindow::lockSelection);
+    addEditEntry(QStringLiteral("Unlock &All"), QStringLiteral("unlock_all"), QStringLiteral("Unlock All"),
+                 QKeySequence(Qt::CTRL | Qt::Key_3), QStringLiteral("PropertyLocked.xpm"), &MainWindow::unlockAll);
 }
 
 void MainWindow::setupOptionsMenu()
@@ -2084,7 +2096,41 @@ bool MainWindow::importGuideLayer(const QString &path, QString *error)
     return true;
 }
 
-void MainWindow::groupOrUngroupSelection()
+void MainWindow::ungroupSelection()
+{
+    if (!state_->hasProject()) {
+        return;
+    }
+    const QVector<QString> entries = state_->normalizeEntrySelection(selectedEntryIds());
+    if (entries.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("No selection to ungroup"), 2500);
+        return;
+    }
+    bool anyGroup = false;
+    for (const QString &entryId : entries) {
+        if (state_->entryIsGroup(entryId)) {
+            anyGroup = true;
+            break;
+        }
+    }
+    if (!anyGroup) {
+        statusBar()->showMessage(QStringLiteral("No group selected to ungroup"), 2500);
+        return;
+    }
+    for (const QString &entryId : entries) {
+        if (state_->entryHasLockedLayer(entryId)) {
+            statusBar()->showMessage(QStringLiteral("Selection contains locked layers"), 3000);
+            return;
+        }
+    }
+    state_->beginProjectEdit();
+    state_->ungroupEntries(entries, false);
+    state_->commitProjectEdit();
+    state_->noteProjectStructureChanged();
+    statusBar()->showMessage(QStringLiteral("Ungrouped selection"), 1500);
+}
+
+void MainWindow::groupSelection()
 {
     if (!state_->hasProject()) {
         return;
@@ -2100,14 +2146,6 @@ void MainWindow::groupOrUngroupSelection()
             statusBar()->showMessage(QStringLiteral("Selection contains locked layers"), 3000);
             return;
         }
-    }
-    if (entries.size() == 1 && state_->entryIsGroup(entries.front())) {
-        state_->beginProjectEdit();
-        state_->ungroupEntries(entries, false);
-        state_->commitProjectEdit();
-        state_->noteProjectStructureChanged();
-        statusBar()->showMessage(QStringLiteral("Ungrouped selection"), 1500);
-        return;
     }
 
     // Guides live outside the group tree (they render behind every shape), so grouping them -
@@ -2147,6 +2185,71 @@ void MainWindow::groupOrUngroupSelection()
     state_->commitProjectEdit();
     state_->noteProjectStructureChanged();
     statusBar()->showMessage(QStringLiteral("Grouped selection"), 1500);
+}
+
+void MainWindow::lockSelection()
+{
+    if (!state_->hasProject()) {
+        return;
+    }
+    const QSet<QString> layerIds = state_->selectedLayerIds();
+    const QSet<QString> guideIds = state_->selectedGuideLayerIds();
+    if (layerIds.isEmpty() && guideIds.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("Nothing selected to lock"), 2500);
+        return;
+    }
+    state_->beginProjectEdit();
+    for (const QString &id : layerIds) {
+        state_->setLayerLockScope(id, true);
+    }
+    for (const QString &id : guideIds) {
+        state_->setGuideLocked(id, true);
+    }
+    state_->commitProjectEdit();
+    // A locked item is no longer canvas-selectable, so drop the selection.
+    state_->clearSelection();
+    state_->noteProjectStructureChanged();
+    statusBar()->showMessage(QStringLiteral("Locked selection"), 1500);
+}
+
+void MainWindow::unlockAll()
+{
+    if (!state_->hasProject()) {
+        return;
+    }
+    state_->beginProjectEdit();
+    state_->setAllLocked(false);
+    state_->commitProjectEdit();
+    state_->noteProjectStructureChanged();
+    statusBar()->showMessage(QStringLiteral("Unlocked all"), 1500);
+}
+
+void MainWindow::showCanvasContextMenu(const QPoint &pos)
+{
+    if (canvas_ == nullptr || !state_->hasProject()) {
+        return;
+    }
+    const bool hasSelection = !state_->selectedLayerIds().isEmpty()
+        || !state_->selectedGuideLayerIds().isEmpty();
+
+    QMenu menu(this);
+    QAction *group = menu.addAction(QStringLiteral("Group"), this, &MainWindow::groupSelection);
+    group->setEnabled(hasSelection);
+    QAction *ungroup = menu.addAction(QStringLiteral("Ungroup"), this, &MainWindow::ungroupSelection);
+    ungroup->setEnabled(hasSelection);
+    menu.addSeparator();
+    QAction *flipH = menu.addAction(QStringLiteral("Flip Horizontal"), this, [this]() { canvas_->flipSelection(true); });
+    QAction *flipV = menu.addAction(QStringLiteral("Flip Vertical"), this, [this]() { canvas_->flipSelection(false); });
+    QAction *rotCW = menu.addAction(QStringLiteral("Rotate 90 CW"), this, [this]() { canvas_->rotateSelection(90.0); });
+    QAction *rotCCW = menu.addAction(QStringLiteral("Rotate 90 CCW"), this, [this]() { canvas_->rotateSelection(-90.0); });
+    for (QAction *a : {flipH, flipV, rotCW, rotCCW}) {
+        a->setEnabled(hasSelection);
+    }
+    menu.addSeparator();
+    QAction *lock = menu.addAction(QStringLiteral("Lock Selection"), this, &MainWindow::lockSelection);
+    lock->setEnabled(hasSelection);
+    menu.addAction(QStringLiteral("Unlock All"), this, &MainWindow::unlockAll);
+    menu.exec(canvas_->mapToGlobal(pos));
 }
 
 void MainWindow::ungroupSelectionFlat()

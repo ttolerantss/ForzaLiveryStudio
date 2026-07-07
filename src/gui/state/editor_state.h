@@ -70,6 +70,9 @@ public:
     bool entryIsGuide(const QString &entryId) const;
     void setGroupAndDescendantLocked(const QString &groupId, bool locked);
     void setLayerLockScope(const QString &layerId, bool locked);
+    void setGuideLocked(const QString &guideId, bool locked);
+    // Clears (or sets) the locked flag on every layer, group, and guide.
+    void setAllLocked(bool locked);
     void setLayerVisible(const QString &layerId, bool visible);
     void setLayerMask(const QString &layerId, bool mask);
     void setGuideLayerVisible(const QString &guideId, bool visible);

@@ -70,11 +70,14 @@ void main()
 constexpr char kCompositeFragmentShader[] = R"(#version 330 core
 in vec2 uv;
 uniform sampler2D scene_texture;
+uniform float scene_opacity;
 out vec4 out_color;
 
 void main()
 {
-    out_color = texture(scene_texture, uv);
+    // Scaling the whole (premultiplied-style) sample uniformly fades the flattened
+    // scene toward the background - used to subdue everything behind an isolated group.
+    out_color = texture(scene_texture, uv) * scene_opacity;
 }
 )";
 
@@ -153,6 +156,7 @@ void NativeShapeRenderer::initialize()
     worldRow1Location_ = program_.uniformLocation("world_row1");
     tintLocation_ = program_.uniformLocation("tint");
     compositeTextureLocation_ = compositeProgram_.uniformLocation("scene_texture");
+    compositeOpacityLocation_ = compositeProgram_.uniformLocation("scene_opacity");
 
     const float quad[] = {
         -1.0f, -1.0f, 0.0f, 0.0f,
@@ -263,8 +267,11 @@ void NativeShapeRenderer::render(
     const QSet<QString> &flashingLayerIds,
     double flashHue,
     double flashStrength,
-    bool clearBackground)
+    bool clearBackground,
+    const QSet<QString> &fullOpacityLayerIds,
+    float dimFactor)
 {
+    const bool dimming = dimFactor < 1.0f;
     QOpenGLFunctions *functions = QOpenGLContext::currentContext()->functions();
     functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
     functions->glDisable(GL_DEPTH_TEST);
@@ -282,60 +289,97 @@ void NativeShapeRenderer::render(
         return;
     }
 
-    sceneFbo_->bind();
-    functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
-    functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
-    functions->glClear(GL_COLOR_BUFFER_BIT);
+    // Draws the visible layers in [lo, hi) into a freshly-cleared scene FBO. When
+    // onlyIsolated is set, only the isolated group's layers are drawn (the vivid top
+    // pass); otherwise every visible layer in the range is drawn at full opacity.
+    const int layerCount = static_cast<int>(project.layers.size());
+    const auto drawLayerPass = [&](int lo, int hi, bool onlyIsolated) {
+        sceneFbo_->bind();
+        functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
+        functions->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);
+        functions->glClear(GL_COLOR_BUFFER_BIT);
 
-    vao_.bind();
-    program_.bind();
-    program_.setUniformValue(viewportLocation_, static_cast<float>(size.width()), static_cast<float>(size.height()));
-    setUniformRows(cameraRow0Location_, cameraRow1Location_, worldToScreen);
-    functions->glEnable(GL_BLEND);
+        vao_.bind();
+        program_.bind();
+        program_.setUniformValue(viewportLocation_, static_cast<float>(size.width()), static_cast<float>(size.height()));
+        setUniformRows(cameraRow0Location_, cameraRow1Location_, worldToScreen);
+        functions->glEnable(GL_BLEND);
 
-    bool haveMaskMode = false;
-    bool currentMaskMode = false;
-    for (const fh6::ShapeLayer &layer : project.layers) {
-        if (!layer.visible) {
-            continue;
-        }
-        ShapeRange range = ranges_.value(layer.shapeId);
-        if (range.vertexCount <= 0) {
-            range = fallbackRange(layer.shapeId, geometry);
-        }
-        if (range.vertexCount <= 0) {
-            continue;
-        }
+        bool haveMaskMode = false;
+        bool currentMaskMode = false;
+        for (int i = std::max(lo, 0); i < std::min(hi, layerCount); ++i) {
+            const fh6::ShapeLayer &layer = project.layers[i];
+            if (!layer.visible) {
+                continue;
+            }
+            if (onlyIsolated && !fullOpacityLayerIds.contains(layer.id)) {
+                continue;
+            }
+            ShapeRange range = ranges_.value(layer.shapeId);
+            if (range.vertexCount <= 0) {
+                range = fallbackRange(layer.shapeId, geometry);
+            }
+            if (range.vertexCount <= 0) {
+                continue;
+            }
 
-        if (!haveMaskMode || currentMaskMode != layer.mask) {
-            haveMaskMode = true;
-            currentMaskMode = layer.mask;
+            if (!haveMaskMode || currentMaskMode != layer.mask) {
+                haveMaskMode = true;
+                currentMaskMode = layer.mask;
+                if (layer.mask) {
+                    functions->glBlendFuncSeparate(GL_ZERO, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
+                } else {
+                    functions->glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+                }
+            }
+
+            setUniformRows(worldRow0Location_, worldRow1Location_, layerTransform(layer));
             if (layer.mask) {
-                functions->glBlendFuncSeparate(GL_ZERO, GL_ONE_MINUS_SRC_ALPHA, GL_ZERO, GL_ONE_MINUS_SRC_ALPHA);
+                program_.setUniformValue(tintLocation_, 0.0f, 0.0f, 0.0f, static_cast<float>(layer.color[3]) / 255.0f);
             } else {
-                functions->glBlendFuncSeparate(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+                program_.setUniformValue(tintLocation_,
+                                         static_cast<float>(layer.color[2]) / 255.0f,
+                                         static_cast<float>(layer.color[1]) / 255.0f,
+                                         static_cast<float>(layer.color[0]) / 255.0f,
+                                         static_cast<float>(layer.color[3]) / 255.0f);
+            }
+            functions->glDrawArrays(GL_TRIANGLES, range.firstVertex, range.vertexCount);
+        }
+
+        functions->glDisable(GL_BLEND);
+        program_.release();
+        vao_.release();
+        sceneFbo_->release();
+    };
+
+    if (!dimming) {
+        drawLayerPass(0, layerCount, false);
+        compositeScene(functions, size, clearBackground, 1.0f);
+    } else {
+        // Isolation mode. The group's leaves are contiguous in the layer stack, so find
+        // their z-range: everything below is the (subdued) backdrop, everything above is
+        // hidden entirely, and the group itself is drawn vivid on top.
+        int minIso = layerCount;
+        int maxIso = -1;
+        for (int i = 0; i < layerCount; ++i) {
+            if (fullOpacityLayerIds.contains(project.layers[i].id)) {
+                minIso = std::min(minIso, i);
+                maxIso = std::max(maxIso, i);
             }
         }
-
-        setUniformRows(worldRow0Location_, worldRow1Location_, layerTransform(layer));
-        if (layer.mask) {
-            program_.setUniformValue(tintLocation_, 0.0f, 0.0f, 0.0f, static_cast<float>(layer.color[3]) / 255.0f);
+        if (maxIso < 0) {
+            drawLayerPass(0, layerCount, false);
+            compositeScene(functions, size, clearBackground, 1.0f);
         } else {
-            program_.setUniformValue(tintLocation_,
-                                     static_cast<float>(layer.color[2]) / 255.0f,
-                                     static_cast<float>(layer.color[1]) / 255.0f,
-                                     static_cast<float>(layer.color[0]) / 255.0f,
-                                     static_cast<float>(layer.color[3]) / 255.0f);
+            // Backdrop: flatten the layers behind the group and composite them once at a
+            // low opacity, so overlaps read as a single subdued image (not per-object).
+            drawLayerPass(0, minIso, false);
+            compositeScene(functions, size, clearBackground, dimFactor);
+            // The isolated group, vivid and on top. Layers above the group are skipped.
+            drawLayerPass(minIso, maxIso + 1, true);
+            compositeScene(functions, size, false, 1.0f);
         }
-        functions->glDrawArrays(GL_TRIANGLES, range.firstVertex, range.vertexCount);
     }
-
-    functions->glDisable(GL_BLEND);
-    program_.release();
-    vao_.release();
-    sceneFbo_->release();
-
-    compositeScene(functions, size, clearBackground);
 
     if (flashHue >= 0.0 && flashStrength > 0.0 && !flashingLayerIds.isEmpty()) {
         vao_.bind();
@@ -384,7 +428,7 @@ void NativeShapeRenderer::ensureSceneFramebuffer(const QSize &size)
     sceneFboSize_ = fboSize;
 }
 
-void NativeShapeRenderer::compositeScene(QOpenGLFunctions *functions, const QSize &size, bool clearBackground)
+void NativeShapeRenderer::compositeScene(QOpenGLFunctions *functions, const QSize &size, bool clearBackground, float opacity)
 {
     functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
     if (clearBackground) {
@@ -398,6 +442,7 @@ void NativeShapeRenderer::compositeScene(QOpenGLFunctions *functions, const QSiz
     functions->glActiveTexture(GL_TEXTURE0);
     functions->glBindTexture(GL_TEXTURE_2D, sceneFbo_->texture());
     compositeProgram_.setUniformValue(compositeTextureLocation_, 0);
+    compositeProgram_.setUniformValue(compositeOpacityLocation_, opacity);
     functions->glDrawArrays(GL_TRIANGLES, 0, 6);
     functions->glBindTexture(GL_TEXTURE_2D, 0);
     compositeProgram_.release();

@@ -37,7 +37,12 @@ public:
                 const QSet<QString> &flashingLayerIds,
                 double flashHue,
                 double flashStrength,
-                bool clearBackground = true);
+                bool clearBackground = true,
+                // Isolation-mode dimming: when dimFactor < 1, every layer NOT in
+                // fullOpacityLayerIds is drawn with its alpha scaled by dimFactor so the
+                // isolated group stays vivid while everything else is subdued.
+                const QSet<QString> &fullOpacityLayerIds = {},
+                float dimFactor = 1.0f);
 
 private:
     struct ShapeRange {
@@ -48,7 +53,7 @@ private:
     void setUniformRows(int row0Location, int row1Location, const QTransform &transform);
     ShapeRange fallbackRange(int shapeId, const ShapeGeometryStore &geometry);
     void ensureSceneFramebuffer(const QSize &size);
-    void compositeScene(QOpenGLFunctions *functions, const QSize &size, bool clearBackground);
+    void compositeScene(QOpenGLFunctions *functions, const QSize &size, bool clearBackground, float opacity = 1.0f);
 
     QOpenGLShaderProgram program_;
     QOpenGLShaderProgram compositeProgram_;
@@ -72,6 +77,7 @@ private:
     int worldRow1Location_ = -1;
     int tintLocation_ = -1;
     int compositeTextureLocation_ = -1;
+    int compositeOpacityLocation_ = -1;
 };
 
 } // namespace gui

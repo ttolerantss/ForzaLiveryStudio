@@ -457,6 +457,16 @@ void EditorState::insertClipboardAboveSelection(const ProjectClipboard &clipboar
                                                 QSet<QString> *newGuideLayerSelection,
                                                 bool renameCopies)
 {
+    // Some projects (never grouped) leave rootChildIds empty; populate it from the flat
+    // layer order so the selection's position can be found. Without this the target
+    // lookup below fails and the paste falls back to index 0 - the very back - which is
+    // why a paste could land behind the original instead of in front of it.
+    if (project_.rootChildIds.isEmpty()) {
+        for (const fh6::ShapeLayer &layer : project_.layers) {
+            project_.rootChildIds.push_back(layer.id);
+        }
+    }
+
     const ProjectEntryMaps maps = buildEntryMaps(project_);
     const QVector<QString> normalizedSelection = normalizeEntrySelection(selectedEntries);
     QString parentId;
@@ -468,11 +478,20 @@ void EditorState::insertClipboardAboveSelection(const ProjectClipboard &clipboar
         if (order < 0) {
             continue;
         }
+        // Higher child index = nearer the front, so order + 1 sits directly in front of
+        // the selected entry.
         if (!haveTarget || candidateParent != parentId || order + 1 > insertAt) {
             parentId = candidateParent;
             insertAt = order + 1;
             haveTarget = true;
         }
+    }
+    // No usable selection: paste at the very front (top of the root stack) rather than
+    // the back, so a pasted object is always visible on top.
+    if (!haveTarget) {
+        parentId = QString();
+        insertAt = project_.rootChildIds.size();
+        haveTarget = true;
     }
     int guideInsertAt = -1;
     for (const QString &entryId : normalizedSelection) {

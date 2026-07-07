@@ -270,6 +270,31 @@ void EditorState::setLayerLockScope(const QString &layerId, bool locked)
     }
 }
 
+void EditorState::setGuideLocked(const QString &guideId, bool locked)
+{
+    invalidateProjectIndexCache();
+    for (fh6::GuideLayer &guide : project_.guideLayers) {
+        if (guide.id == guideId) {
+            guide.locked = locked;
+            return;
+        }
+    }
+}
+
+void EditorState::setAllLocked(bool locked)
+{
+    invalidateProjectIndexCache();
+    for (fh6::ShapeLayer &layer : project_.layers) {
+        layer.locked = locked;
+    }
+    for (fh6::LayerGroup &group : project_.groups) {
+        group.locked = locked;
+    }
+    for (fh6::GuideLayer &guide : project_.guideLayers) {
+        guide.locked = locked;
+    }
+}
+
 void EditorState::setLayerVisible(const QString &layerId, bool visible)
 {
     for (fh6::ShapeLayer &layer : project_.layers) {

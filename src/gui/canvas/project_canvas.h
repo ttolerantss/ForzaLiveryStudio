@@ -65,6 +65,12 @@ public:
     // Mirror the current selection about its centre: horizontal = left/right,
     // otherwise top/bottom. A whole group mirrors as a unit.
     void flipSelection(bool horizontal);
+    // Rotate the whole selection rigidly about its combined centre by `degrees`.
+    void rotateSelection(double degrees);
+    // Illustrator-style isolation mode: enter a group so only its objects are
+    // editable and everything else is dimmed; exitIsolation() steps out one level.
+    bool isolationActive() const { return !isolatedGroupId_.isEmpty(); }
+    void exitIsolation();
     // Called whenever a canvas transform drag mutates the selection (live and on
     // finish), so the property panel can refresh its transform fields.
     void setTransformChangedCallback(std::function<void()> fn);
@@ -75,6 +81,7 @@ protected:
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
+    void mouseDoubleClickEvent(QMouseEvent *event) override;
     void wheelEvent(QWheelEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     void keyReleaseEvent(QKeyEvent *event) override;
@@ -247,6 +254,16 @@ private:
     // to grab a transform handle rather than force a plain move.
     bool selectPressOnBox_ = false;
     bool selectionFlashEnabled_ = true;
+    // Isolation mode: the entered group (empty = not isolated) and the cached set of
+    // leaf layer ids inside it (the only pickable/vivid layers while isolated).
+    QString isolatedGroupId_;
+    QSet<QString> isolatedLeafIds_;
+    void enterIsolation(const QString &groupId);
+    void refreshIsolationLeafCache();
+    // Which entry a click should select: normally the outermost enclosing group, but in
+    // isolation mode only up to a direct child of the isolated group (so its own objects
+    // select individually, as if ungrouped). Empty result = select the leaf itself.
+    QString selectionGroupForEntry(const QString &entryId) const;
     // Frame angle for a Relative-mode multi-selection box. It is NOT stored directly (that
     // would go stale on undo/redo); instead it is derived live as
     // (primary selected item's current rotation - frameReferenceRotation_). The reference is

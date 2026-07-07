@@ -390,6 +390,8 @@ void ProjectCanvas::setProject(fh6::Project *project)
     project_ = project;
     guideImageCache_.clear();
     sectionCanvasCache_.clear();
+    isolatedGroupId_.clear();
+    isolatedLeafIds_.clear();
     zoom_ = 1.0;
     pan_ = {};
     refitView();
@@ -794,6 +796,10 @@ QVector<QString> ProjectCanvas::layersAtScreenPoint(const QPointF &point)
             continue;
         }
         if (locked.contains(entry.layerId)) {
+            continue;
+        }
+        // In isolation mode only the entered group's own layers are pickable.
+        if (isolationActive() && !isolatedLeafIds_.contains(entry.layerId)) {
             continue;
         }
         // Cheap quad-bounds reject, then a precise test against the shape's art.
@@ -1209,6 +1215,113 @@ void ProjectCanvas::flipSelection(bool horizontal)
     state_->commitTransformCommand();
     state_->noteProjectGeometryChanged();
     invalidateSceneCache();
+    update();
+}
+
+void ProjectCanvas::rotateSelection(double degrees)
+{
+    if (state_ == nullptr || project_ == nullptr) {
+        return;
+    }
+    QVector<fh6::ShapeLayer *> layers = selectedLayers();
+    QVector<fh6::GuideLayer *> guides = selectedGuideLayers();
+    if (layers.isEmpty() && guides.isEmpty()) {
+        return;
+    }
+
+    const QPointF center = selectedWorldBounds().center();
+    QTransform rot;
+    rot.rotate(degrees);
+
+    state_->beginTransformCommand();
+    project_->layers.data();
+    project_->guideLayers.data();
+    layers = selectedLayers();
+    guides = selectedGuideLayers();
+
+    // Rotate each item's position about the selection centre and add the same angle to
+    // its own rotation, so the selection turns as one rigid body.
+    const auto rotateItem = [&](auto *item) {
+        const QPointF offset = rot.map(QPointF(item->x - center.x(), item->y - center.y()));
+        item->x = center.x() + offset.x();
+        item->y = center.y() + offset.y();
+        item->rotation = normalizeRotation(item->rotation + degrees);
+    };
+    for (fh6::ShapeLayer *layer : layers) {
+        rotateItem(layer);
+    }
+    for (fh6::GuideLayer *guide : guides) {
+        rotateItem(guide);
+    }
+
+    state_->commitTransformCommand();
+    state_->noteProjectGeometryChanged();
+    invalidateSceneCache();
+    update();
+}
+
+void ProjectCanvas::refreshIsolationLeafCache()
+{
+    isolatedLeafIds_.clear();
+    if (isolatedGroupId_.isEmpty() || state_ == nullptr) {
+        return;
+    }
+    const QVector<QString> leaves = state_->leafLayerIdsForEntry(isolatedGroupId_);
+    if (leaves.isEmpty()) {
+        // The group no longer exists (deleted/ungrouped): drop isolation.
+        isolatedGroupId_.clear();
+        return;
+    }
+    isolatedLeafIds_ = QSet<QString>(leaves.begin(), leaves.end());
+}
+
+QString ProjectCanvas::selectionGroupForEntry(const QString &entryId) const
+{
+    if (state_ == nullptr) {
+        return {};
+    }
+    if (!isolationActive()) {
+        return state_->topmostGroupForEntry(entryId);
+    }
+    // Isolated: resolve only up to the direct child of the isolated group.
+    QString node = entryId;
+    QString parent = state_->parentGroupForEntry(node);
+    while (parent != isolatedGroupId_ && !parent.isEmpty()) {
+        node = parent;
+        parent = state_->parentGroupForEntry(node);
+    }
+    if (parent == isolatedGroupId_ && node != entryId && state_->entryIsGroup(node)) {
+        return node;  // a nested sub-group inside the isolated group
+    }
+    return {};  // a leaf directly in the isolated group: select it alone
+}
+
+void ProjectCanvas::enterIsolation(const QString &groupId)
+{
+    if (groupId.isEmpty() || state_ == nullptr) {
+        return;
+    }
+    isolatedGroupId_ = groupId;
+    refreshIsolationLeafCache();
+    invalidateSceneCache();
+    invalidateSelectionCache();
+    update();
+}
+
+void ProjectCanvas::exitIsolation()
+{
+    if (isolatedGroupId_.isEmpty() || state_ == nullptr) {
+        return;
+    }
+    const QString exited = isolatedGroupId_;
+    // Step out one level: to the parent group, or fully out at the top level.
+    isolatedGroupId_ = state_->parentGroupForEntry(exited);
+    refreshIsolationLeafCache();
+    // Keep the group we stepped out of selected, the way Illustrator does.
+    const QVector<QString> leaves = state_->leafLayerIdsForEntry(exited);
+    state_->setSelectionIds(QSet<QString>(leaves.begin(), leaves.end()), {});
+    invalidateSceneCache();
+    invalidateSelectionCache();
     update();
 }
 
@@ -1952,6 +2065,19 @@ void ProjectCanvas::drawOverlay(QPainter &painter)
         painter.setPen(QPen(MarqueeColor, 1, Qt::DashLine));
         painter.drawRect(marqueeRect_);
     }
+    if (isolationActive()) {
+        // A small pill at the top of the canvas signals isolation mode and how to leave.
+        const QString text = QStringLiteral("Isolation Mode  -  double-click to go deeper, Esc to exit");
+        const QFontMetrics fm = painter.fontMetrics();
+        const int pad = 8;
+        const QRect bar((width() - (fm.horizontalAdvance(text) + pad * 2)) / 2, 8,
+                        fm.horizontalAdvance(text) + pad * 2, fm.height() + pad);
+        painter.setPen(Qt::NoPen);
+        painter.setBrush(QColor(20, 130, 240, 220));
+        painter.drawRoundedRect(bar, 5, 5);
+        painter.setPen(Qt::white);
+        painter.drawText(bar, Qt::AlignCenter, text);
+    }
     drawCursorHint(painter);
     painter.restore();
 }
@@ -2083,6 +2209,9 @@ void ProjectCanvas::selectByMarquee(Qt::KeyboardModifiers modifiers)
             continue;
         }
         if (locked.contains(entry.layerId)) {
+            continue;
+        }
+        if (isolationActive() && !isolatedLeafIds_.contains(entry.layerId)) {
             continue;
         }
         if (entry.screenBounds.intersects(marquee)
@@ -2243,6 +2372,10 @@ void ProjectCanvas::paintGL()
 
     updateViewTransform();
     updateSelectionFlashState();
+    // Keep the isolated group's leaf set current (and auto-exit if it was removed).
+    if (isolationActive()) {
+        refreshIsolationLeafCache();
+    }
     if (rendererGeometryDirty_ && renderer_.isInitialized()) {
         renderer_.uploadGeometry(geometry_);
         rendererGeometryDirty_ = false;
@@ -2250,7 +2383,9 @@ void ProjectCanvas::paintGL()
 
     const std::optional<double> flashProgress = selectionFlashProgress();
     const bool flashActive = flashProgress.has_value() && !flashingLayerIds_.isEmpty();
-    const QString sectionCacheKey = flashActive ? QString() : sectionCanvasCacheKey();
+    // Isolation dimming is not part of the section cache key, so bypass the cache while
+    // isolated to avoid serving a non-dimmed frame.
+    const QString sectionCacheKey = (flashActive || isolationActive()) ? QString() : sectionCanvasCacheKey();
     if (!sectionCacheKey.isEmpty()) {
         const auto cached = sectionCanvasCache_.constFind(sectionCacheKey);
         if (cached != sectionCanvasCache_.constEnd()) {
@@ -2270,7 +2405,8 @@ void ProjectCanvas::paintGL()
     drawGuideLayers(painter);
 
     painter.beginNativePainting();
-    renderer_.render(*project_, geometry_, worldToScreen_, size(), flashingLayerIds_, selectionFlashHue(), selectionFlashStrength(), false);
+    renderer_.render(*project_, geometry_, worldToScreen_, size(), flashingLayerIds_, selectionFlashHue(), selectionFlashStrength(), false,
+                     isolatedLeafIds_, isolationActive() ? 0.35f : 1.0f);
     painter.endNativePainting();
 
     if (!sectionCacheKey.isEmpty()) {
@@ -2339,8 +2475,9 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
         const QString target = selectTargetAtScreenPoint(event->position(), {});
         if (!target.isEmpty()) {
             // Ctrl selects just the object under the cursor even inside a group;
-            // without Ctrl the whole enclosing group is selected.
-            const QString groupId = ctrl ? QString() : state_->topmostGroupForEntry(target);
+            // without Ctrl the enclosing group is selected - but in isolation mode only
+            // up to a direct child of the isolated group, so its objects select singly.
+            const QString groupId = ctrl ? QString() : selectionGroupForEntry(target);
             const QVector<QString> members = groupId.isEmpty()
                 ? QVector<QString>{target}
                 : state_->leafLayerIdsForEntry(groupId);
@@ -2406,14 +2543,20 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
         if (!additive
             && (!state_->selectedLayerIds().isEmpty() || !state_->selectedGuideLayerIds().isEmpty())) {
             const SelectionBox box = currentSelectionBox();
-            // "On the selection" when the topmost shape under the cursor is already
-            // selected: pressing it drags the whole (possibly multi-) selection instead
-            // of re-picking a single shape. Use the raw topmost hit, not
-            // selectTargetAtScreenPoint(), which cycles to the *next* overlapping shape
-            // when the top one is selected and so would drop the multi-selection.
-            const QVector<QString> hitsUnder = layersAtScreenPoint(event->position());
-            const bool onSelectedShape = !hitsUnder.isEmpty()
-                && state_->selectedLayerIds().contains(hitsUnder.front());
+            // "On the selection" when ANY selected shape lies under the cursor: pressing
+            // it drags the whole (possibly multi-) selection instead of re-picking a
+            // single shape. Checking every hit under the point - not just the topmost -
+            // means a selected shape stays draggable even when another object overlaps
+            // on top of it. To pick the object on top instead, click where the current
+            // selection isn't (or clear the selection first).
+            const QSet<QString> &selectedIds = state_->selectedLayerIds();
+            bool onSelectedShape = false;
+            for (const QString &hitId : layersAtScreenPoint(event->position())) {
+                if (selectedIds.contains(hitId)) {
+                    onSelectedShape = true;
+                    break;
+                }
+            }
             selectPressOnBox_ = onSelectedShape
                 || (box.valid
                     && (!transformHandleAt(event->position(), box).isEmpty()
@@ -2604,6 +2747,47 @@ void ProjectCanvas::mouseReleaseEvent(QMouseEvent *event)
     QOpenGLWidget::mouseReleaseEvent(event);
 }
 
+void ProjectCanvas::mouseDoubleClickEvent(QMouseEvent *event)
+{
+    if (event->button() != Qt::LeftButton || state_ == nullptr || project_ == nullptr) {
+        QOpenGLWidget::mouseDoubleClickEvent(event);
+        return;
+    }
+    // The preceding press may have begun a move drag on the (already-selected) group;
+    // abandon it so the double-click only enters isolation.
+    cancelDrag();
+
+    const QVector<QString> hits = layersAtScreenPoint(event->position());
+    if (hits.isEmpty()) {
+        // Double-clicking empty space steps out one isolation level (Illustrator-style).
+        if (isolationActive()) {
+            exitIsolation();
+        }
+        event->accept();
+        return;
+    }
+
+    // Walk up from the clicked leaf to the direct child of the current context (the
+    // isolated group, or the root when not isolated).
+    const QString context = isolatedGroupId_;
+    const QString leaf = hits.front();
+    QString node = leaf;
+    QString parent = state_->parentGroupForEntry(node);
+    while (parent != context && !parent.isEmpty()) {
+        node = parent;
+        parent = state_->parentGroupForEntry(node);
+    }
+    if (parent == context && node != context && state_->entryIsGroup(node)) {
+        // Enter that group one level deeper and select the object under the cursor.
+        enterIsolation(node);
+        state_->setSelectionIds(QSet<QString>{leaf}, {});
+    } else {
+        // A loose leaf directly in the current context: just select it.
+        state_->setSelectionIds(QSet<QString>{leaf}, {});
+    }
+    event->accept();
+}
+
 void ProjectCanvas::wheelEvent(QWheelEvent *event)
 {
     // Read the notch on whichever axis carries it (some platforms deliver the
@@ -2646,6 +2830,12 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
     }
     if (event->key() == Qt::Key_Escape) {
         cancelDrag();
+        // Esc leaves isolation mode one level at a time before anything else.
+        if (isolationActive()) {
+            exitIsolation();
+            event->accept();
+            return;
+        }
         if (tool_ == QStringLiteral("transform")) {
             setTool(QStringLiteral("select"));
         }

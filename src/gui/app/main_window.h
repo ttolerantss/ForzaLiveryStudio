@@ -59,9 +59,13 @@ public:
     void saveCurrentSelectionAsCustomGroup();
     void insertCustomGroup(const QString &name, const ProjectClipboard &clipboard);
     bool importGuideLayer(const QString &path, QString *error = nullptr);
-    void groupOrUngroupSelection();
+    void groupSelection();
+    void ungroupSelection();
     void ungroupSelectionFlat();
     void collapseAllGroups();
+    void lockSelection();
+    void unlockAll();
+    void showCanvasContextMenu(const QPoint &pos);
     void undo();
     void redo();
     void noteProjectGeometryChanged(bool refreshPreviews = false);
