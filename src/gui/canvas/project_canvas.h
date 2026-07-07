@@ -67,6 +67,32 @@ public:
     void flipSelection(bool horizontal);
     // Rotate the whole selection rigidly about its combined centre by `degrees`.
     void rotateSelection(double degrees);
+    // Nudge the selection by a screen-pixel delta (arrow keys); converts to world units
+    // so the on-screen movement matches at any zoom.
+    void nudgeSelection(double screenDx, double screenDy);
+    // Align/distribute the selected objects. Each top-level object or group moves as a
+    // unit. mode: 0 left, 1 h-center, 2 right, 3 top, 4 v-middle, 5 bottom,
+    // 6 distribute horizontally, 7 distribute vertically.
+    void alignSelection(int mode);
+    // Eyedropper: arm sampling so the next canvas click samples the colour of the shape
+    // under the cursor and reports it via the callback (Esc cancels).
+    void armEyedropper();
+    void setEyedropperCallback(std::function<void(const QColor &)> fn);
+    // Rulers along the top/left edges (Ctrl+R). Dragging out from a ruler creates a
+    // horizontal/vertical guide line; guides are editor-only (never exported).
+    bool rulersVisible() const { return rulersVisible_; }
+    void setRulersVisible(bool visible);
+    void toggleRulers() { setRulersVisible(!rulersVisible_); }
+    void clearGuides();
+    // Smart snapping while moving: the dragged selection snaps its edges/centre/corners
+    // to other objects and to guides (Illustrator-style). Hold Ctrl to bypass.
+    bool snapEnabled() const { return snapEnabled_; }
+    void setSnapEnabled(bool enabled) { snapEnabled_ = enabled; }
+    // Editor-only preview opacity: dims the current selection (a group's leaves too) on
+    // screen to make editing easier, without changing the exported in-game colour.
+    void setSelectionPreviewOpacity(double opacity);
+    double selectionPreviewOpacity() const;
+    void clearPreviewOpacity();
     // Illustrator-style isolation mode: enter a group so only its objects are
     // editable and everything else is dimmed; exitIsolation() steps out one level.
     bool isolationActive() const { return !isolatedGroupId_.isEmpty(); }
@@ -258,6 +284,37 @@ private:
     // leaf layer ids inside it (the only pickable/vivid layers while isolated).
     QString isolatedGroupId_;
     QSet<QString> isolatedLeafIds_;
+    bool eyedropperArmed_ = false;
+    std::function<void(const QColor &)> eyedropperCallback_;
+    // Editor-only ruler guides. A horizontal guide is a constant world-Y line; a
+    // vertical guide a constant world-X line.
+    struct GuideLine {
+        bool horizontal = false;
+        double worldPos = 0.0;
+    };
+    bool rulersVisible_ = false;
+    QVector<GuideLine> guideLines_;
+    bool draggingGuide_ = false;
+    int activeGuideIndex_ = -1;      // -1 while dragging out a brand-new guide
+    bool activeGuideHorizontal_ = false;
+    double activeGuideWorldPos_ = 0.0;
+    int guideAtScreenPos(const QPointF &screenPoint) const;
+    void drawRulersAndGuides(QPainter &painter);
+
+    // Snapping state, rebuilt at the start of a move drag.
+    bool snapEnabled_ = true;
+    // Editor-only preview opacity per layer id (0..1); never exported.
+    QHash<QString, double> previewOpacity_;
+    QVector<double> snapTargetsX_;   // world X lines (other objects' edges/centres + vertical guides)
+    QVector<double> snapTargetsY_;   // world Y lines
+    QRectF dragStartBboxWorld_;      // the moving selection's world bounds at drag start
+    struct SnapLineHit {
+        bool vertical = false;
+        double worldPos = 0.0;
+    };
+    QVector<SnapLineHit> activeSnapLines_;
+    void buildSnapTargets();
+    QPointF applyMoveSnap(const QPointF &delta);
     void enterIsolation(const QString &groupId);
     void refreshIsolationLeafCache();
     // Which entry a click should select: normally the outermost enclosing group, but in

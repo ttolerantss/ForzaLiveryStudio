@@ -7,12 +7,16 @@
 #include <QFontMetrics>
 #include <QGridLayout>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QLabel>
 #include <QLinearGradient>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPaintEvent>
+#include <QPixmap>
+#include <QPolygonF>
+#include <QToolButton>
 #include <QRegularExpression>
 #include <QRegularExpressionValidator>
 #include <QResizeEvent>
@@ -30,6 +34,26 @@ namespace {
 constexpr const char *RecentColorsSettingsKey = "color/recentColors";
 constexpr int MaxRecentColors = 16;
 constexpr int SliderHandleHalf = 5;
+
+// A small drawn eyedropper glyph so the button reads clearly without an asset file.
+QIcon eyedropperIcon()
+{
+    QPixmap pm(18, 18);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(QColor(200, 200, 200), 1.6);
+    pen.setCapStyle(Qt::RoundCap);
+    p.setPen(pen);
+    p.drawLine(QPointF(4.8, 13.0), QPointF(11.5, 6.3));  // shaft
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(200, 200, 200));
+    p.drawEllipse(QPointF(12.6, 5.2), 2.4, 2.4);         // bulb
+    QPolygonF tip;
+    tip << QPointF(3.0, 14.6) << QPointF(5.6, 12.0) << QPointF(4.6, 11.0) << QPointF(2.0, 13.6);
+    p.drawPolygon(tip);                                   // tip
+    return QIcon(pm);
+}
 
 } // namespace
 
@@ -428,7 +452,7 @@ ColorPanel::ColorPanel(EditorState *state, QWidget *parent)
         spin->setFixedWidth(52);
         spin->setButtonSymbols(QAbstractSpinBox::NoButtons);
         slider->setBeginCallback([this]() { beginEdit(); });
-        slider->setChangedCallback([this](int) { onSpinChanged(); });
+        slider->setChangedCallback([this](int) { onSliderChanged(); });
         slider->setCommitCallback([this]() { endEdit(true); });
         *sliders[i] = slider;
         *spins[i] = spin;
@@ -448,6 +472,20 @@ ColorPanel::ColorPanel(EditorState *state, QWidget *parent)
     hex_->setMaxLength(6);
     hex_->setFixedWidth(80);
     hex_->setValidator(new QRegularExpressionValidator(QRegularExpression(QStringLiteral("[0-9A-Fa-f]{0,6}")), hex_));
+    auto *eyedropperButton = new QToolButton(this);
+    eyedropperButton->setIcon(eyedropperIcon());
+    eyedropperButton->setIconSize(QSize(18, 18));
+    eyedropperButton->setCursor(Qt::PointingHandCursor);
+    eyedropperButton->setToolTip(QStringLiteral("Eyedropper (I) - sample a colour from the canvas"));
+    eyedropperButton->setStyleSheet(QStringLiteral(
+        "QToolButton { border: 1px solid #4a4a4a; border-radius: 4px; padding: 3px; }"
+        "QToolButton:hover { background: #333333; }"));
+    connect(eyedropperButton, &QToolButton::clicked, this, [this]() {
+        if (eyedropperRequestedCallback_) {
+            eyedropperRequestedCallback_();
+        }
+    });
+    hexRow->addWidget(eyedropperButton);
     hexRow->addStretch(1);
     hexRow->addWidget(hexHash);
     hexRow->addWidget(hex_);
@@ -707,6 +745,16 @@ void ColorPanel::onSpinChanged()
     }
     const QColor color(rSpin_->value(), gSpin_->value(), bSpin_->value(), working_.alpha());
     // Keep the slider values in step with a spin edit (loading_ guards recursion).
+    setWorkingColor(color, true);
+}
+
+void ColorPanel::onSliderChanged()
+{
+    if (loading_) {
+        return;
+    }
+    // Compose from the slider positions (the spin boxes follow via updateChildWidgets).
+    const QColor color(rSlider_->value(), gSlider_->value(), bSlider_->value(), working_.alpha());
     setWorkingColor(color, true);
 }
 

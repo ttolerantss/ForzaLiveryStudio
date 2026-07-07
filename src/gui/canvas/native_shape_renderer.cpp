@@ -269,9 +269,11 @@ void NativeShapeRenderer::render(
     double flashStrength,
     bool clearBackground,
     const QSet<QString> &fullOpacityLayerIds,
-    float dimFactor)
+    float dimFactor,
+    const QHash<QString, double> *editorOpacity)
 {
     const bool dimming = dimFactor < 1.0f;
+    const bool hasEditorOpacity = editorOpacity != nullptr && !editorOpacity->isEmpty();
     QOpenGLFunctions *functions = QOpenGLContext::currentContext()->functions();
     functions->glViewport(0, 0, std::max(size.width(), 1), std::max(size.height(), 1));
     functions->glDisable(GL_DEPTH_TEST);
@@ -352,7 +354,32 @@ void NativeShapeRenderer::render(
         sceneFbo_->release();
     };
 
-    if (!dimming) {
+    if (!dimming && hasEditorOpacity) {
+        // Preview-opacity mode: split the (contiguous) layer stack into maximal runs that
+        // share the same editor opacity. Each run is flattened into the FBO and composited
+        // once at its opacity, so a dimmed group reads as a single translucent image
+        // instead of its members' opacities compounding where they overlap.
+        const auto previewOf = [&](int i) {
+            return editorOpacity->value(project.layers[i].id, 1.0);
+        };
+        int i = 0;
+        bool first = true;
+        while (i < layerCount) {
+            const double op = previewOf(i);
+            int j = i + 1;
+            while (j < layerCount && previewOf(j) == op) {
+                ++j;
+            }
+            drawLayerPass(i, j, false);
+            compositeScene(functions, size, first ? clearBackground : false, static_cast<float>(op));
+            first = false;
+            i = j;
+        }
+        if (first) {
+            // No layers at all: still honour clearBackground.
+            compositeScene(functions, size, clearBackground, 1.0f);
+        }
+    } else if (!dimming) {
         drawLayerPass(0, layerCount, false);
         compositeScene(functions, size, clearBackground, 1.0f);
     } else {

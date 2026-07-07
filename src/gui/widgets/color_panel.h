@@ -140,6 +140,8 @@ public:
     void setSelection(const QVector<fh6::ShapeLayer *> &layers,
                       const QVector<fh6::LayerGroup *> &groups);
     void refreshTheme();
+    // Invoked when the panel's eyedropper button is pressed (arms canvas sampling).
+    void setEyedropperRequestedCallback(std::function<void()> fn) { eyedropperRequestedCallback_ = std::move(fn); }
 
 private:
     static std::array<quint8, 4> toArray(const QColor &color);
@@ -162,6 +164,7 @@ private:
 
     void setWorkingColor(const QColor &color, bool apply);
     void onSpinChanged();
+    void onSliderChanged();
     void onHexEntered();
     void openPickerDialog(const QColor &seed);
 
@@ -180,6 +183,7 @@ private:
 
     QVector<QColor> recentColors_;
 
+    std::function<void()> eyedropperRequestedCallback_;
     QLabel *recentLabel_ = nullptr;
     RecentColorsBar *recentBar_ = nullptr;
     ColorSwatch *swatch_ = nullptr;

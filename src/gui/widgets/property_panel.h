@@ -40,6 +40,8 @@ public:
     void setSpriteSizeFn(std::function<QSizeF(int)> fn);
     // Invoked by the Flip H / Flip V buttons; horizontal = left/right.
     void setFlipCallback(std::function<void(bool horizontal)> fn);
+    // Invoked when the color row's eyedropper button is pressed (arms canvas sampling).
+    void setEyedropperRequestedCallback(std::function<void()> fn) { eyedropperRequestedCallback_ = std::move(fn); }
     // Live-refresh the transform fields (x/y/scale/rotation/skew) from the current
     // single-item selection, e.g. while it is being dragged/scaled on the canvas.
     void syncTransformValues();
@@ -82,6 +84,7 @@ private:
     EditorState *state_ = nullptr;
     std::function<QSizeF(int)> spriteSizeFn_;
     std::function<void(bool)> flipCallback_;
+    std::function<void()> eyedropperRequestedCallback_;
     QVector<fh6::ShapeLayer *> layers_;
     QVector<fh6::GuideLayer *> guides_;
     QVector<fh6::LayerGroup *> groups_;

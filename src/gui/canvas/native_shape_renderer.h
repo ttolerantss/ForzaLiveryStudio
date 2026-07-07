@@ -42,7 +42,10 @@ public:
                 // fullOpacityLayerIds is drawn with its alpha scaled by dimFactor so the
                 // isolated group stays vivid while everything else is subdued.
                 const QSet<QString> &fullOpacityLayerIds = {},
-                float dimFactor = 1.0f);
+                float dimFactor = 1.0f,
+                // Editor-only preview opacity per layer id (0..1); purely visual, never
+                // exported. Absent ids draw fully opaque.
+                const QHash<QString, double> *editorOpacity = nullptr);
 
 private:
     struct ShapeRange {

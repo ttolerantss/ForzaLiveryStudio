@@ -166,6 +166,87 @@ void EditorState::ungroupEntries(const QVector<QString> &entryIds, bool flatten)
     selectedLayerIds_ = selectedLeaves;
 }
 
+bool EditorState::reorderZOrder(const QVector<QString> &entryIds, ZOrderMove move)
+{
+    invalidateProjectIndexCache();
+    if (!hasProject_) {
+        return false;
+    }
+    // Ensure a root child list exists so top-level entries have positions.
+    if (project_.rootChildIds.isEmpty()) {
+        for (const fh6::ShapeLayer &layer : project_.layers) {
+            project_.rootChildIds.push_back(layer.id);
+        }
+    }
+    const QVector<QString> entries = normalizeEntrySelection(entryIds);
+    if (entries.isEmpty()) {
+        return false;
+    }
+    const ProjectEntryMaps maps = buildEntryMaps(project_);
+    const QString parentId = maps.parentByChild.value(entries.front());
+    QSet<QString> selected;
+    for (const QString &id : entries) {
+        if (maps.parentByChild.value(id) != parentId) {
+            return false;  // all moved entries must share one parent
+        }
+        selected.insert(id);
+    }
+    QVector<QString> *children = childListForParent(parentId);
+    if (children == nullptr) {
+        return false;
+    }
+    QVector<QString> &order = *children;
+    const int n = order.size();
+    const auto isSel = [&](const QString &id) { return selected.contains(id); };
+    switch (move) {
+    case ZOrderMove::ToFront: {
+        QVector<QString> keep;
+        QVector<QString> moved;
+        for (const QString &id : order) {
+            (isSel(id) ? moved : keep).push_back(id);
+        }
+        order = keep;
+        order += moved;  // higher index = nearer the front
+        break;
+    }
+    case ZOrderMove::ToBack: {
+        QVector<QString> keep;
+        QVector<QString> moved;
+        for (const QString &id : order) {
+            (isSel(id) ? moved : keep).push_back(id);
+        }
+        order = moved;
+        order += keep;
+        break;
+    }
+    case ZOrderMove::Forward:
+        for (int i = n - 2; i >= 0; --i) {
+            if (isSel(order[i]) && !isSel(order[i + 1])) {
+                order.swapItemsAt(i, i + 1);
+            }
+        }
+        break;
+    case ZOrderMove::Backward:
+        for (int i = 1; i < n; ++i) {
+            if (isSel(order[i]) && !isSel(order[i - 1])) {
+                order.swapItemsAt(i, i - 1);
+            }
+        }
+        break;
+    }
+
+    // Rebuild the flat layer array from the updated tree so rendering/hit-testing follow.
+    const ProjectEntryMaps afterMaps = buildEntryMaps(project_);
+    QVector<QString> layerOrder;
+    layerOrder.reserve(project_.layers.size());
+    for (const QString &rootId : project_.rootChildIds) {
+        collectLayerOrder(rootId, afterMaps, &layerOrder);
+    }
+    applyLayerOrder(&project_, layerOrder);
+    invalidateProjectIndexCache();
+    return true;
+}
+
 bool EditorState::reorderEntries(const QString &parentGroupId, const QVector<QString> &entryIds, int insertRow)
 {
     invalidateProjectIndexCache();

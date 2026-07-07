@@ -27,11 +27,13 @@ This fork keeps all of the original functionality and focuses on making the edit
 
 **Selection & editing**
 - One unified **Select** tool that selects, moves *and* transforms — scale/rotate/skew handles appear on the artboard around the selection, so there's no need to switch to a separate transform tool. The transform box hides while you drag to move and reappears on release.
-- Click-drag on empty canvas draws a **marquee** selection.
+- Click-drag on empty canvas draws a **marquee** selection; touching any part of a grouped object selects the whole group.
 - **Shift + click** to add/remove objects from the selection.
 - **Ctrl + click** to select a single object inside a group instead of the whole group.
 - Pixel-accurate selection and hover based on each shape's real geometry (not its bounding box), with a blue outline of the shape under the cursor.
 - Dragging a multi-selection moves every selected object together, and a selected object stays draggable even when another object overlaps on top of it.
+- **Arrow keys** nudge the selection 1px (**Shift + arrow** = 10px).
+- **Eyedropper** (**I**, or the button in the Color / Properties panels): click any object to sample its colour onto the selection.
 - **Right-click** the canvas for quick actions: Group, Ungroup, Flip Horizontal/Vertical, Rotate 90° CW/CCW, Lock Selection, Unlock All.
 - **Flip Horizontal / Flip Vertical** performs a true mirror (an unrotated shape stays at rotation 0), and **Rotate 90°** turns the selection about its center. A whole group flips/rotates as a unit.
 - The Properties panel's transform fields (position, scale, rotation, skew) update **live** while you move, scale, or rotate a shape on the canvas.
@@ -46,8 +48,16 @@ This fork keeps all of the original functionality and focuses on making the edit
 - **Lock** objects so they can't be picked on the canvas — clicks pass straight through to whatever is above or below them. **Ctrl + 2** locks the selection, **Ctrl + 3** unlocks everything.
 - **Ctrl + J** duplicates the selection, and **Paste** always lands in front of the original.
 
-**Guides**
-- Bring in a raster image as a guide/template layer, then **lock or hide** it to make it a passive backdrop — it won't block selecting or marqueeing objects over it.
+**Aligning, arranging & snapping**
+- **Align & Distribute** (Edit menu / right-click): align the selection by left/center/right or top/middle/bottom edges, and distribute spacing evenly. Each object or group moves as a unit.
+- **Arrange / z-order**: Bring to Front (**Ctrl + Shift + ]**), Bring Forward (**Ctrl + ]**), Send Backward (**Ctrl + [**), Send to Back (**Ctrl + Shift + [**).
+- **Smart snapping** (on by default): while dragging, the selection snaps to other objects' edges, centers and corners, and to guides — with a magenta indicator line. Center-to-center snapping makes centering easy. Hold **Ctrl** to bypass. Skewed shapes snap by their real transformed corners.
+- **Rotate**: hold **Shift** while rotating to snap to 15° increments.
+- **Preview opacity** (right-click → *Preview Opacity*): dim a group or objects on screen to work around them — a **visual-only** aid that never changes the exported in-game colour. Dimming a group flattens it, so overlapping members don't compound.
+
+**Rulers & guides**
+- **Ctrl + R** toggles rulers along the top and left edges. **Drag out from a ruler** to create a horizontal or vertical guide line; drag a guide back onto a ruler to remove it, or **Options → Clear Guides**. Guides are editor-only and never exported.
+- You can also bring in a raster image as a guide/template layer, then **lock or hide** it to make it a passive backdrop — it won't block selecting or marqueeing objects over it.
 
 **Navigation**
 - **Scroll** pans up/down, **Ctrl + scroll** pans left/right, **Alt + scroll** zooms toward the cursor.
@@ -60,7 +70,13 @@ This fork keeps all of the original functionality and focuses on making the edit
 | `Ctrl + G` | Group selection |
 | `Ctrl + J` | Duplicate |
 | `Ctrl + 2` / `Ctrl + 3` | Lock selection / Unlock all |
+| `Ctrl + ]` / `Ctrl + [` | Bring forward / send backward |
+| `Ctrl + Shift + ]` / `Ctrl + Shift + [` | Bring to front / send to back |
 | `Shift + H` / `Shift + V` | Flip horizontal / vertical |
+| Arrow keys (`Shift` = ×10) | Nudge selection |
+| `I` | Eyedropper |
+| `Ctrl + R` | Toggle rulers |
+| `Ctrl` (while dragging) | Bypass snapping |
 | Double-click group · `Esc` | Enter isolation mode · exit one level |
 | `Y` | Stamp (duplicate in place) |
 | `Ctrl + Z` / `Ctrl + Y` | Undo / Redo |

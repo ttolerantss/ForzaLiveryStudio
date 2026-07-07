@@ -65,6 +65,9 @@ public:
     void collapseAllGroups();
     void lockSelection();
     void unlockAll();
+    void applyColorToSelection(const QColor &color);
+    // move: 0 = to front, 1 = forward, 2 = backward, 3 = to back (EditorState::ZOrderMove).
+    void changeZOrder(int move);
     void showCanvasContextMenu(const QPoint &pos);
     void undo();
     void redo();

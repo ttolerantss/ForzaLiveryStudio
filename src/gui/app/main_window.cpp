@@ -242,6 +242,8 @@ void MainWindow::setupCanvas()
     // Right-click on the artboard opens a quick actions menu (group, flip, rotate, lock).
     canvas_->setContextMenuPolicy(Qt::CustomContextMenu);
     connect(canvas_, &QWidget::customContextMenuRequested, this, &MainWindow::showCanvasContextMenu);
+    // Eyedropper: a sampled colour is applied to the current selection.
+    canvas_->setEyedropperCallback([this](const QColor &color) { applyColorToSelection(color); });
     canvas_->setTransformRelativeMode(!loadTransformModeSettings().relativeMode);
     applyBehaviorSettings(loadBehaviorSettings(), false);
     QString geometryError;
@@ -385,6 +387,7 @@ void MainWindow::setupDocks()
             canvas_->flipSelection(horizontal);
         }
     });
+    properties_->setEyedropperRequestedCallback([this]() { if (canvas_ != nullptr) { canvas_->armEyedropper(); } });
     // Keep the property panel's transform fields in sync while dragging/scaling
     // a shape on the canvas.
     canvas_->setTransformChangedCallback([this]() {
@@ -400,6 +403,7 @@ void MainWindow::setupDocks()
     // Illustrator-style Color panel: its own row directly below Properties (not
     // tabbed with it).
     colorPanel_ = new ColorPanel(state_, this);
+    colorPanel_->setEyedropperRequestedCallback([this]() { if (canvas_ != nullptr) { canvas_->armEyedropper(); } });
     auto *colorDock = addPanelDock(QStringLiteral("Color"), QStringLiteral("ColorDock"),
                                    QStringLiteral("PropertyColor.xpm"), Qt::RightDockWidgetArea,
                                    makeScrollable(colorPanel_));
@@ -573,6 +577,34 @@ void MainWindow::setupEditMenu()
                  QKeySequence(), QStringLiteral("MenuUngroupFlat.xpm"), &MainWindow::ungroupSelection);
     addEditEntry(QStringLiteral("Ungroup &Flat"), QStringLiteral("ungroup_flat"), QStringLiteral("Ungroup Flat"),
                  QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_G), QStringLiteral("MenuUngroupFlat.xpm"), &MainWindow::ungroupSelectionFlat);
+    editMenu->addSeparator();
+    addEditEntry(QStringLiteral("Bring to &Front"), QStringLiteral("bring_to_front"), QStringLiteral("Bring to Front"),
+                 QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_BracketRight), QStringLiteral("MenuGroup.xpm"),
+                 [this]() { changeZOrder(0); });
+    addEditEntry(QStringLiteral("Bring F&orward"), QStringLiteral("bring_forward"), QStringLiteral("Bring Forward"),
+                 QKeySequence(Qt::CTRL | Qt::Key_BracketRight), QStringLiteral("MenuGroup.xpm"),
+                 [this]() { changeZOrder(1); });
+    addEditEntry(QStringLiteral("Send Back&ward"), QStringLiteral("send_backward"), QStringLiteral("Send Backward"),
+                 QKeySequence(Qt::CTRL | Qt::Key_BracketLeft), QStringLiteral("MenuGroup.xpm"),
+                 [this]() { changeZOrder(2); });
+    addEditEntry(QStringLiteral("Send to &Back"), QStringLiteral("send_to_back"), QStringLiteral("Send to Back"),
+                 QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_BracketLeft), QStringLiteral("MenuGroup.xpm"),
+                 [this]() { changeZOrder(3); });
+    editMenu->addSeparator();
+    QMenu *alignMenu = editMenu->addMenu(QStringLiteral("Align && Distribute"));
+    const auto addAlign = [this, alignMenu](const QString &text, int mode) {
+        alignMenu->addAction(text, this, [this, mode]() { if (canvas_ != nullptr) { canvas_->alignSelection(mode); } });
+    };
+    addAlign(QStringLiteral("Align Left"), 0);
+    addAlign(QStringLiteral("Align Center"), 1);
+    addAlign(QStringLiteral("Align Right"), 2);
+    alignMenu->addSeparator();
+    addAlign(QStringLiteral("Align Top"), 3);
+    addAlign(QStringLiteral("Align Middle"), 4);
+    addAlign(QStringLiteral("Align Bottom"), 5);
+    alignMenu->addSeparator();
+    addAlign(QStringLiteral("Distribute Horizontally"), 6);
+    addAlign(QStringLiteral("Distribute Vertically"), 7);
     addEditEntry(QStringLiteral("Fold All Groups"), QStringLiteral("fold_all_groups"), QStringLiteral("Fold All Groups"),
                  QKeySequence(Qt::CTRL | Qt::SHIFT | Qt::Key_E), QStringLiteral("MenuFoldAllGroups.xpm"), &MainWindow::collapseAllGroups);
     addEditEntry(QStringLiteral("&Delete Selected"), QStringLiteral("delete_selected"), QStringLiteral("Delete Selected"),
@@ -628,6 +660,30 @@ void MainWindow::setupOptionsMenu()
     };
     connect(transformRelativeOption, &QAction::toggled, this, applyTransformRelativeOption);
     canvas_->setTransformRelativeMode(!initialTransformSettings.relativeMode);
+
+    optionsMenu->addSeparator();
+    QAction *snapOption = optionsMenu->addAction(QStringLiteral("Smart Snapping"));
+    snapOption->setCheckable(true);
+    snapOption->setChecked(canvas_ != nullptr && canvas_->snapEnabled());
+    connect(snapOption, &QAction::toggled, this, [this](bool checked) {
+        if (canvas_ != nullptr) {
+            canvas_->setSnapEnabled(checked);
+        }
+    });
+    QAction *rulersOption = optionsMenu->addAction(QStringLiteral("Show Rulers"));
+    rulersOption->setCheckable(true);
+    connect(rulersOption, &QAction::toggled, this, [this](bool checked) {
+        if (canvas_ != nullptr) {
+            canvas_->setRulersVisible(checked);
+        }
+    });
+    registerShortcutAction(rulersOption, QStringLiteral("toggle_rulers"), QStringLiteral("Show Rulers"),
+                           QKeySequence(Qt::CTRL | Qt::Key_R), QString(), false, Qt::ApplicationShortcut);
+    optionsMenu->addAction(QStringLiteral("Clear Guides"), this, [this]() {
+        if (canvas_ != nullptr) {
+            canvas_->clearGuides();
+        }
+    });
 }
 
 void MainWindow::setupToolbar()
@@ -2187,6 +2243,26 @@ void MainWindow::groupSelection()
     statusBar()->showMessage(QStringLiteral("Grouped selection"), 1500);
 }
 
+void MainWindow::changeZOrder(int move)
+{
+    if (!state_->hasProject()) {
+        return;
+    }
+    const QVector<QString> entries = state_->normalizeEntrySelection(selectedEntryIds());
+    if (entries.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("No selection to reorder"), 2500);
+        return;
+    }
+    state_->beginProjectEdit();
+    if (state_->reorderZOrder(entries, static_cast<EditorState::ZOrderMove>(move))) {
+        state_->commitProjectEdit();
+        state_->noteProjectStructureChanged();
+    } else {
+        state_->cancelProjectEdit();
+        statusBar()->showMessage(QStringLiteral("Only objects sharing a parent can be restacked together"), 3000);
+    }
+}
+
 void MainWindow::lockSelection()
 {
     if (!state_->hasProject()) {
@@ -2224,6 +2300,40 @@ void MainWindow::unlockAll()
     statusBar()->showMessage(QStringLiteral("Unlocked all"), 1500);
 }
 
+void MainWindow::applyColorToSelection(const QColor &color)
+{
+    if (!state_->hasProject() || !color.isValid()) {
+        return;
+    }
+    const QSet<QString> layerIds = state_->selectedLayerIds();
+    const QVector<fh6::LayerGroup *> groups = selectedGroups();
+    if (layerIds.isEmpty() && groups.isEmpty()) {
+        statusBar()->showMessage(QStringLiteral("Select an object first to apply the sampled colour"), 3000);
+        return;
+    }
+    const std::array<quint8, 4> value = {
+        static_cast<quint8>(color.blue()),
+        static_cast<quint8>(color.green()),
+        static_cast<quint8>(color.red()),
+        static_cast<quint8>(color.alpha()),
+    };
+    state_->beginProjectEdit();
+    if (fh6::Project *project = state_->project()) {
+        project->layers.data();
+        for (fh6::ShapeLayer &layer : project->layers) {
+            if (layerIds.contains(layer.id)) {
+                layer.color = value;
+            }
+        }
+    }
+    for (fh6::LayerGroup *group : groups) {
+        state_->setGroupDescendantColor(group->id, value);
+    }
+    state_->commitProjectEdit();
+    state_->noteProjectGeometryChanged(true);
+    statusBar()->showMessage(QStringLiteral("Applied sampled colour"), 1500);
+}
+
 void MainWindow::showCanvasContextMenu(const QPoint &pos)
 {
     if (canvas_ == nullptr || !state_->hasProject()) {
@@ -2245,6 +2355,36 @@ void MainWindow::showCanvasContextMenu(const QPoint &pos)
     for (QAction *a : {flipH, flipV, rotCW, rotCCW}) {
         a->setEnabled(hasSelection);
     }
+    menu.addSeparator();
+    QMenu *arrange = menu.addMenu(QStringLiteral("Arrange"));
+    arrange->setEnabled(hasSelection);
+    arrange->addAction(QStringLiteral("Bring to Front"), this, [this]() { changeZOrder(0); });
+    arrange->addAction(QStringLiteral("Bring Forward"), this, [this]() { changeZOrder(1); });
+    arrange->addAction(QStringLiteral("Send Backward"), this, [this]() { changeZOrder(2); });
+    arrange->addAction(QStringLiteral("Send to Back"), this, [this]() { changeZOrder(3); });
+    QMenu *align = menu.addMenu(QStringLiteral("Align & Distribute"));
+    align->setEnabled(hasSelection);
+    const auto addAlign = [this, align](const QString &text, int mode) {
+        align->addAction(text, this, [this, mode]() { canvas_->alignSelection(mode); });
+    };
+    addAlign(QStringLiteral("Align Left"), 0);
+    addAlign(QStringLiteral("Align Center"), 1);
+    addAlign(QStringLiteral("Align Right"), 2);
+    align->addSeparator();
+    addAlign(QStringLiteral("Align Top"), 3);
+    addAlign(QStringLiteral("Align Middle"), 4);
+    addAlign(QStringLiteral("Align Bottom"), 5);
+    align->addSeparator();
+    addAlign(QStringLiteral("Distribute Horizontally"), 6);
+    addAlign(QStringLiteral("Distribute Vertically"), 7);
+    QMenu *preview = menu.addMenu(QStringLiteral("Preview Opacity (visual only)"));
+    preview->setEnabled(hasSelection);
+    for (int pct : {100, 75, 50, 25, 10}) {
+        preview->addAction(QStringLiteral("%1%").arg(pct), this,
+                           [this, pct]() { canvas_->setSelectionPreviewOpacity(pct / 100.0); });
+    }
+    preview->addSeparator();
+    preview->addAction(QStringLiteral("Reset all"), this, [this]() { canvas_->clearPreviewOpacity(); });
     menu.addSeparator();
     QAction *lock = menu.addAction(QStringLiteral("Lock Selection"), this, &MainWindow::lockSelection);
     lock->setEnabled(hasSelection);

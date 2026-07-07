@@ -125,6 +125,9 @@ public:
     void ungroupEntries(const QVector<QString> &entryIds, bool flatten);
     bool reorderEntries(const QString &parentGroupId, const QVector<QString> &entryIds, int insertRow);
     bool reorderGuideLayers(const QVector<QString> &guideIds, int insertRow);
+    // Z-order (stacking) changes for the selected entries within their shared parent.
+    enum class ZOrderMove { ToFront, Forward, Backward, ToBack };
+    bool reorderZOrder(const QVector<QString> &entryIds, ZOrderMove move);
     QString copyName(const QString &name) const;
     const ProjectClipboard *clipboard() const;
 

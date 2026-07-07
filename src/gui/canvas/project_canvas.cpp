@@ -163,6 +163,53 @@ double snapRotation(double degrees, Qt::KeyboardModifiers modifiers)
     return degrees;
 }
 
+// Ruler geometry + the "nice" tick step nearest a target world span (1/2/5 x 10^n).
+constexpr double RulerThickness = 18.0;
+const QColor GuideColor(0, 170, 200);
+const QColor GuideActiveColor(0, 210, 245);
+
+double niceTickStep(double rough)
+{
+    if (rough <= 0.0 || !std::isfinite(rough)) {
+        return 1.0;
+    }
+    const double power = std::floor(std::log10(rough));
+    const double base = std::pow(10.0, power);
+    const double fraction = rough / base;
+    const double niceFraction = fraction < 1.5 ? 1.0 : (fraction < 3.0 ? 2.0 : (fraction < 7.0 ? 5.0 : 10.0));
+    return niceFraction * base;
+}
+
+const QColor SnapLineColor(255, 40, 200);   // magenta smart-guide line
+
+const QCursor &eyedropperCursor()
+{
+    static const QCursor cursor = []() {
+        QPixmap pm(24, 24);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing, true);
+        // Shaft with a dark halo under a light stroke so it reads on any background.
+        const auto shaft = [&](const QColor &c, double w) {
+            QPen pen(c, w);
+            pen.setCapStyle(Qt::RoundCap);
+            p.setPen(pen);
+            p.drawLine(QPointF(6.5, 17.5), QPointF(16.5, 7.5));
+        };
+        shaft(QColor(0, 0, 0, 200), 3.4);
+        shaft(QColor(235, 235, 235), 1.8);
+        p.setPen(QPen(QColor(0, 0, 0, 200), 1.2));
+        p.setBrush(QColor(235, 235, 235));
+        p.drawEllipse(QPointF(18.0, 6.0), 3.0, 3.0);   // bulb
+        QPolygonF tip;
+        tip << QPointF(2.5, 21.5) << QPointF(6.5, 17.5) << QPointF(7.5, 18.5) << QPointF(3.5, 22.5);
+        p.drawPolygon(tip);                             // tip (hotspot)
+        p.end();
+        return QCursor(pm, 2, 22);
+    }();
+    return cursor;
+}
+
 QPointF constrainDelta(QPointF delta, Qt::KeyboardModifiers modifiers)
 {
     if (!(modifiers & Qt::ShiftModifier)) {
@@ -392,6 +439,7 @@ void ProjectCanvas::setProject(fh6::Project *project)
     sectionCanvasCache_.clear();
     isolatedGroupId_.clear();
     isolatedLeafIds_.clear();
+    previewOpacity_.clear();
     zoom_ = 1.0;
     pan_ = {};
     refitView();
@@ -1275,6 +1323,448 @@ void ProjectCanvas::refreshIsolationLeafCache()
     isolatedLeafIds_ = QSet<QString>(leaves.begin(), leaves.end());
 }
 
+void ProjectCanvas::alignSelection(int mode)
+{
+    if (state_ == nullptr || project_ == nullptr) {
+        return;
+    }
+    updateViewTransform();
+    QVector<fh6::ShapeLayer *> layers = selectedLayers();
+    if (layers.isEmpty()) {
+        return;
+    }
+
+    // Group the selected leaves into alignment units: a whole top-level group moves as
+    // one, a loose shape as itself. Each unit tracks its screen-space bounds.
+    struct Unit {
+        QRectF bounds;
+        QVector<QString> layerIds;
+    };
+    QHash<QString, Unit> unitByKey;
+    QVector<QString> keyOrder;
+    for (const fh6::ShapeLayer *layer : layers) {
+        const QString top = state_->topmostGroupForEntry(layer->id);
+        const QString key = top.isEmpty() ? layer->id : top;
+        const QRectF b = layerScreenPolygon(*layer).boundingRect();
+        auto it = unitByKey.find(key);
+        if (it == unitByKey.end()) {
+            Unit u;
+            u.bounds = b;
+            u.layerIds.push_back(layer->id);
+            unitByKey.insert(key, u);
+            keyOrder.push_back(key);
+        } else {
+            it->bounds = it->bounds.united(b);
+            it->layerIds.push_back(layer->id);
+        }
+    }
+    const bool distribute = (mode == 6 || mode == 7);
+    if (keyOrder.size() < 2 || (distribute && keyOrder.size() < 3)) {
+        return;  // need 2+ units to align, 3+ to distribute
+    }
+
+    // Target screen position per unit -> a per-unit screen delta.
+    QHash<QString, QPointF> screenDeltaByKey;
+    if (!distribute) {
+        QRectF sel;
+        for (const QString &key : keyOrder) {
+            sel = sel.isNull() ? unitByKey[key].bounds : sel.united(unitByKey[key].bounds);
+        }
+        for (const QString &key : keyOrder) {
+            const QRectF &b = unitByKey[key].bounds;
+            QPointF d(0.0, 0.0);
+            switch (mode) {
+            case 0: d.setX(sel.left() - b.left()); break;
+            case 1: d.setX(sel.center().x() - b.center().x()); break;
+            case 2: d.setX(sel.right() - b.right()); break;
+            case 3: d.setY(sel.top() - b.top()); break;
+            case 4: d.setY(sel.center().y() - b.center().y()); break;
+            case 5: d.setY(sel.bottom() - b.bottom()); break;
+            default: break;
+            }
+            screenDeltaByKey.insert(key, d);
+        }
+    } else {
+        // Distribute unit centres evenly between the two extreme units.
+        const bool horizontal = (mode == 6);
+        QVector<QString> sorted = keyOrder;
+        std::sort(sorted.begin(), sorted.end(), [&](const QString &a, const QString &b) {
+            const QPointF ca = unitByKey[a].bounds.center();
+            const QPointF cb = unitByKey[b].bounds.center();
+            return horizontal ? ca.x() < cb.x() : ca.y() < cb.y();
+        });
+        const QPointF first = unitByKey[sorted.front()].bounds.center();
+        const QPointF last = unitByKey[sorted.back()].bounds.center();
+        const int count = sorted.size();
+        for (int i = 0; i < count; ++i) {
+            const QString &key = sorted[i];
+            const QPointF c = unitByKey[key].bounds.center();
+            const double t = static_cast<double>(i) / static_cast<double>(count - 1);
+            QPointF d(0.0, 0.0);
+            if (horizontal) {
+                d.setX(first.x() + t * (last.x() - first.x()) - c.x());
+            } else {
+                d.setY(first.y() + t * (last.y() - first.y()) - c.y());
+            }
+            screenDeltaByKey.insert(key, d);
+        }
+    }
+
+    const QPointF worldOrigin = screenToWorld(QPointF(0.0, 0.0));
+
+    state_->beginTransformCommand();
+    project_->layers.data();
+    project_->guideLayers.data();
+    // Re-resolve id -> layer pointer in the detached buffer.
+    QHash<QString, fh6::ShapeLayer *> layerById;
+    for (fh6::ShapeLayer &layer : project_->layers) {
+        layerById.insert(layer.id, &layer);
+    }
+    for (const QString &key : keyOrder) {
+        const QPointF screenDelta = screenDeltaByKey.value(key);
+        const QPointF worldDelta = screenToWorld(screenDelta) - worldOrigin;
+        for (const QString &id : unitByKey[key].layerIds) {
+            if (fh6::ShapeLayer *layer = layerById.value(id, nullptr)) {
+                layer->x += worldDelta.x();
+                layer->y += worldDelta.y();
+            }
+        }
+    }
+    state_->commitTransformCommand();
+    state_->noteProjectGeometryChanged();
+    invalidateSceneCache();
+    invalidateSelectionCache();
+    update();
+    if (transformChangedCallback_) {
+        transformChangedCallback_();
+    }
+}
+
+void ProjectCanvas::armEyedropper()
+{
+    eyedropperArmed_ = true;
+    setCursor(eyedropperCursor());
+}
+
+void ProjectCanvas::setEyedropperCallback(std::function<void(const QColor &)> fn)
+{
+    eyedropperCallback_ = std::move(fn);
+}
+
+void ProjectCanvas::setSelectionPreviewOpacity(double opacity)
+{
+    if (state_ == nullptr) {
+        return;
+    }
+    const double clamped = std::clamp(opacity, 0.0, 1.0);
+    const QSet<QString> ids = state_->selectedLayerIds();
+    if (ids.isEmpty()) {
+        return;
+    }
+    for (const QString &id : ids) {
+        if (clamped >= 0.999) {
+            previewOpacity_.remove(id);  // full opacity is the default; keep the map sparse
+        } else {
+            previewOpacity_.insert(id, clamped);
+        }
+    }
+    invalidateSceneCache();
+    update();
+}
+
+double ProjectCanvas::selectionPreviewOpacity() const
+{
+    if (state_ == nullptr) {
+        return 1.0;
+    }
+    const QSet<QString> ids = state_->selectedLayerIds();
+    if (ids.isEmpty()) {
+        return 1.0;
+    }
+    // Report the minimum preview opacity across the selection (so the control reflects
+    // however dim the selection currently is).
+    double result = 1.0;
+    for (const QString &id : ids) {
+        result = std::min(result, previewOpacity_.value(id, 1.0));
+    }
+    return result;
+}
+
+void ProjectCanvas::clearPreviewOpacity()
+{
+    if (previewOpacity_.isEmpty()) {
+        return;
+    }
+    previewOpacity_.clear();
+    invalidateSceneCache();
+    update();
+}
+
+void ProjectCanvas::setRulersVisible(bool visible)
+{
+    if (rulersVisible_ == visible) {
+        return;
+    }
+    rulersVisible_ = visible;
+    update();
+}
+
+void ProjectCanvas::clearGuides()
+{
+    if (guideLines_.isEmpty()) {
+        return;
+    }
+    guideLines_.clear();
+    update();
+}
+
+int ProjectCanvas::guideAtScreenPos(const QPointF &screenPoint) const
+{
+    const double edge = rulersVisible_ ? RulerThickness : 0.0;
+    for (int i = 0; i < guideLines_.size(); ++i) {
+        const GuideLine &guide = guideLines_[i];
+        if (guide.horizontal) {
+            const double y = worldToScreen_.map(QPointF(0.0, guide.worldPos)).y();
+            if (screenPoint.x() >= edge && std::abs(screenPoint.y() - y) <= 4.0) {
+                return i;
+            }
+        } else {
+            const double x = worldToScreen_.map(QPointF(guide.worldPos, 0.0)).x();
+            if (screenPoint.y() >= edge && std::abs(screenPoint.x() - x) <= 4.0) {
+                return i;
+            }
+        }
+    }
+    return -1;
+}
+
+void ProjectCanvas::drawRulersAndGuides(QPainter &painter)
+{
+    const double edge = rulersVisible_ ? RulerThickness : 0.0;
+
+    // Guide lines are shown whenever they exist (rulers or not).
+    for (const GuideLine &guide : guideLines_) {
+        painter.setPen(QPen(GuideColor, 1));
+        if (guide.horizontal) {
+            const double y = worldToScreen_.map(QPointF(0.0, guide.worldPos)).y();
+            painter.drawLine(QPointF(edge, y), QPointF(width(), y));
+        } else {
+            const double x = worldToScreen_.map(QPointF(guide.worldPos, 0.0)).x();
+            painter.drawLine(QPointF(x, edge), QPointF(x, height()));
+        }
+    }
+    if (draggingGuide_) {
+        painter.setPen(QPen(GuideActiveColor, 1, Qt::DashLine));
+        if (activeGuideHorizontal_) {
+            const double y = worldToScreen_.map(QPointF(0.0, activeGuideWorldPos_)).y();
+            painter.drawLine(QPointF(edge, y), QPointF(width(), y));
+        } else {
+            const double x = worldToScreen_.map(QPointF(activeGuideWorldPos_, 0.0)).x();
+            painter.drawLine(QPointF(x, edge), QPointF(x, height()));
+        }
+    }
+
+    if (!rulersVisible_) {
+        return;
+    }
+
+    const QColor bandBg(38, 38, 38);
+    const QColor bandLine(70, 70, 70);
+    const QColor tickColor(120, 120, 120);
+    const QColor textColor(170, 170, 170);
+    painter.fillRect(QRectF(0.0, 0.0, width(), RulerThickness), bandBg);
+    painter.fillRect(QRectF(0.0, 0.0, RulerThickness, height()), bandBg);
+    painter.setPen(QPen(bandLine, 1));
+    painter.drawLine(QPointF(0.0, RulerThickness), QPointF(width(), RulerThickness));
+    painter.drawLine(QPointF(RulerThickness, 0.0), QPointF(RulerThickness, height()));
+
+    QFont font = painter.font();
+    font.setPointSizeF(7.0);
+    painter.setFont(font);
+
+    const QPointF worldOrigin = screenToWorld(QPointF(0.0, 0.0));
+    const double worldPerPxX = std::abs(screenToWorld(QPointF(100.0, 0.0)).x() - worldOrigin.x()) / 100.0;
+    const double worldPerPxY = std::abs(screenToWorld(QPointF(0.0, 100.0)).y() - worldOrigin.y()) / 100.0;
+    const double stepX = niceTickStep(worldPerPxX * 64.0);
+    const double stepY = niceTickStep(worldPerPxY * 64.0);
+
+    // Top ruler (world X).
+    if (stepX > 0.0) {
+        const double worldLeft = screenToWorld(QPointF(RulerThickness, 0.0)).x();
+        const double worldRight = screenToWorld(QPointF(width(), 0.0)).x();
+        for (double t = std::ceil(worldLeft / stepX) * stepX; t <= worldRight; t += stepX) {
+            const double sx = worldToScreen_.map(QPointF(t, 0.0)).x();
+            painter.setPen(QPen(tickColor, 1));
+            painter.drawLine(QPointF(sx, RulerThickness - 5.0), QPointF(sx, RulerThickness));
+            painter.setPen(textColor);
+            painter.drawText(QRectF(sx + 2.0, 1.0, 44.0, RulerThickness - 3.0),
+                             Qt::AlignLeft | Qt::AlignVCenter, QString::number(t, 'g', 4));
+        }
+    }
+    // Left ruler (world Y). World Y grows upward, so iterate from the bottom up.
+    if (stepY > 0.0) {
+        const double worldBottom = screenToWorld(QPointF(0.0, height())).y();
+        const double worldTop = screenToWorld(QPointF(0.0, RulerThickness)).y();
+        for (double t = std::ceil(worldBottom / stepY) * stepY; t <= worldTop; t += stepY) {
+            const double sy = worldToScreen_.map(QPointF(0.0, t)).y();
+            painter.setPen(QPen(tickColor, 1));
+            painter.drawLine(QPointF(RulerThickness - 5.0, sy), QPointF(RulerThickness, sy));
+            painter.save();
+            painter.translate(RulerThickness - 6.0, sy - 2.0);
+            painter.rotate(-90.0);
+            painter.setPen(textColor);
+            painter.drawText(QRectF(2.0, -RulerThickness + 1.0, 44.0, RulerThickness - 3.0),
+                             Qt::AlignLeft | Qt::AlignVCenter, QString::number(t, 'g', 4));
+            painter.restore();
+        }
+    }
+    // Corner box over the intersection.
+    painter.fillRect(QRectF(0.0, 0.0, RulerThickness, RulerThickness), bandBg);
+    painter.setPen(QPen(bandLine, 1));
+    painter.drawLine(QPointF(0.0, RulerThickness), QPointF(RulerThickness, RulerThickness));
+    painter.drawLine(QPointF(RulerThickness, 0.0), QPointF(RulerThickness, RulerThickness));
+}
+
+void ProjectCanvas::nudgeSelection(double screenDx, double screenDy)
+{
+    if (state_ == nullptr || project_ == nullptr) {
+        return;
+    }
+    QVector<fh6::ShapeLayer *> layers = selectedLayers();
+    QVector<fh6::GuideLayer *> guides = selectedGuideLayers();
+    if (layers.isEmpty() && guides.isEmpty()) {
+        return;
+    }
+    updateViewTransform();
+    // Convert the screen-pixel step into a world-space delta (handles zoom + the y flip).
+    const QPointF delta = screenToWorld(QPointF(screenDx, screenDy)) - screenToWorld(QPointF(0.0, 0.0));
+
+    state_->beginTransformCommand();
+    project_->layers.data();
+    project_->guideLayers.data();
+    layers = selectedLayers();
+    guides = selectedGuideLayers();
+    for (fh6::ShapeLayer *layer : layers) {
+        layer->x += delta.x();
+        layer->y += delta.y();
+    }
+    for (fh6::GuideLayer *guide : guides) {
+        guide->x += delta.x();
+        guide->y += delta.y();
+    }
+    state_->commitTransformCommand();
+    state_->noteProjectGeometryChanged();
+    invalidateSceneCache();
+    update();
+    if (transformChangedCallback_) {
+        transformChangedCallback_();
+    }
+}
+
+void ProjectCanvas::buildSnapTargets()
+{
+    snapTargetsX_.clear();
+    snapTargetsY_.clear();
+    dragStartBboxWorld_ = QRectF();
+    activeSnapLines_.clear();
+    if (project_ == nullptr || !snapEnabled_) {
+        return;
+    }
+
+    QSet<QString> dragged;
+    for (const fh6::ShapeLayer *layer : dragLayers_) {
+        dragged.insert(layer->id);
+    }
+    for (const fh6::GuideLayer *guide : dragGuides_) {
+        dragged.insert(guide->id);
+    }
+
+    // Targets from every other visible object: bounding-box edges + centre, plus the
+    // four transformed corners (so a skewed object's corners are snap points too).
+    for (const fh6::ShapeLayer &layer : project_->layers) {
+        if (!layer.visible || dragged.contains(layer.id)) {
+            continue;
+        }
+        const QRectF local = entryLocalRect(geometry_.shapeSize(layer.shapeId));
+        const QTransform t = entryTransform(layer);
+        const QRectF r = t.mapRect(local);
+        snapTargetsX_ << r.left() << r.center().x() << r.right();
+        snapTargetsY_ << r.top() << r.center().y() << r.bottom();
+        const QPointF corners[4] = {t.map(local.topLeft()), t.map(local.topRight()),
+                                    t.map(local.bottomRight()), t.map(local.bottomLeft())};
+        for (const QPointF &p : corners) {
+            snapTargetsX_ << p.x();
+            snapTargetsY_ << p.y();
+        }
+    }
+    for (const GuideLine &guide : guideLines_) {
+        if (guide.horizontal) {
+            snapTargetsY_ << guide.worldPos;
+        } else {
+            snapTargetsX_ << guide.worldPos;
+        }
+    }
+
+    // The moving selection's world bounds at drag start.
+    QRectF bbox;
+    bool have = false;
+    const auto unite = [&](const QRectF &r) { bbox = have ? bbox.united(r) : r; have = true; };
+    for (const fh6::ShapeLayer *layer : dragLayers_) {
+        unite(entryTransform(*layer).mapRect(entryLocalRect(geometry_.shapeSize(layer->shapeId))));
+    }
+    for (const fh6::GuideLayer *guide : dragGuides_) {
+        unite(entryTransform(*guide).mapRect(entryLocalRect(*guide)));
+    }
+    dragStartBboxWorld_ = bbox;
+}
+
+QPointF ProjectCanvas::applyMoveSnap(const QPointF &delta)
+{
+    activeSnapLines_.clear();
+    const double scale = baseScale_ * zoom_;
+    if (!snapEnabled_ || dragStartBboxWorld_.isNull() || scale <= 0.0) {
+        return delta;
+    }
+    const double threshold = 6.0 / scale;  // 6 screen pixels, in world units
+    const QRectF cur = dragStartBboxWorld_.translated(delta);
+    QPointF result = delta;
+
+    // Each axis snaps independently to the nearest target line within the threshold.
+    const auto snapAxis = [&](const double cands[3], const QVector<double> &targets,
+                              double &correction, double &snapPos) -> bool {
+        double best = threshold;
+        bool found = false;
+        for (int i = 0; i < 3; ++i) {
+            for (double t : targets) {
+                const double d = t - cands[i];
+                if (std::abs(d) < best) {
+                    best = std::abs(d);
+                    correction = d;
+                    snapPos = t;
+                    found = true;
+                }
+            }
+        }
+        return found;
+    };
+
+    const double candX[3] = {cur.left(), cur.center().x(), cur.right()};
+    double corrX = 0.0;
+    double snapX = 0.0;
+    if (snapAxis(candX, snapTargetsX_, corrX, snapX)) {
+        result.rx() += corrX;
+        activeSnapLines_.push_back({true, snapX});
+    }
+    const double candY[3] = {cur.top(), cur.center().y(), cur.bottom()};
+    double corrY = 0.0;
+    double snapY = 0.0;
+    if (snapAxis(candY, snapTargetsY_, corrY, snapY)) {
+        result.ry() += corrY;
+        activeSnapLines_.push_back({false, snapY});
+    }
+    return result;
+}
+
 QString ProjectCanvas::selectionGroupForEntry(const QString &entryId) const
 {
     if (state_ == nullptr) {
@@ -1378,12 +1868,19 @@ void ProjectCanvas::captureDragStarts()
     for (fh6::GuideLayer *guide : dragGuides_) {
         dragGuideStarts_.insert(guide->id, {guide->x, guide->y, guide->scaleX, guide->scaleY, guide->rotation});
     }
+    buildSnapTargets();
 }
 
 void ProjectCanvas::applyMoveDrag(const QPointF &screenPoint, Qt::KeyboardModifiers modifiers)
 {
     updateCursorForPoint(screenPoint);
-    const QPointF delta = constrainDelta(screenToWorld(screenPoint) - dragStartWorld_, modifiers);
+    QPointF delta = constrainDelta(screenToWorld(screenPoint) - dragStartWorld_, modifiers);
+    // Smart snapping (Ctrl temporarily bypasses it).
+    if (!(modifiers & Qt::ControlModifier)) {
+        delta = applyMoveSnap(delta);
+    } else {
+        activeSnapLines_.clear();
+    }
     const auto moveItem = [&delta](auto *item, const EntryStart &start) {
         item->x = start.x + delta.x();
         item->y = start.y + delta.y();
@@ -1724,6 +2221,7 @@ void ProjectCanvas::resetDragState()
     dragGuideStarts_.clear();
     dragLayers_.clear();
     dragGuides_.clear();
+    activeSnapLines_.clear();
     updateCursorForPoint(mapFromGlobal(QCursor::pos()));
     update();
 }
@@ -1939,6 +2437,10 @@ Qt::CursorShape ProjectCanvas::cursorForPoint(const QPointF &point)
 
 void ProjectCanvas::updateCursorForPoint(const QPointF &point)
 {
+    if (eyedropperArmed_) {
+        setCursor(eyedropperCursor());
+        return;
+    }
     if (dragMode_ == DragMode::None && !rect().contains(point.toPoint())) {
         unsetCursor();
         return;
@@ -2078,6 +2580,19 @@ void ProjectCanvas::drawOverlay(QPainter &painter)
         painter.setPen(Qt::white);
         painter.drawText(bar, Qt::AlignCenter, text);
     }
+    if ((dragMode_ == DragMode::Move || dragMode_ == DragMode::TransformMove) && !activeSnapLines_.isEmpty()) {
+        painter.setPen(QPen(SnapLineColor, 1));
+        for (const SnapLineHit &snap : activeSnapLines_) {
+            if (snap.vertical) {
+                const double x = worldToScreen_.map(QPointF(snap.worldPos, 0.0)).x();
+                painter.drawLine(QPointF(x, 0.0), QPointF(x, height()));
+            } else {
+                const double y = worldToScreen_.map(QPointF(0.0, snap.worldPos)).y();
+                painter.drawLine(QPointF(0.0, y), QPointF(width(), y));
+            }
+        }
+    }
+    drawRulersAndGuides(painter);
     drawCursorHint(painter);
     painter.restore();
 }
@@ -2204,6 +2719,7 @@ void ProjectCanvas::selectByMarquee(Qt::KeyboardModifiers modifiers)
     // skipped so a marquee never grabs them.
     const QRectF marquee = marqueeRect_.normalized();
     const QSet<QString> locked = state_ != nullptr ? state_->lockedLayerIds() : QSet<QString>();
+    QSet<QString> hitLeaves;
     for (const HitEntry &entry : hitEntries()) {
         if (entry.layerIndex < 0 || entry.layerIndex >= static_cast<int>(project_->layers.size())) {
             continue;
@@ -2216,8 +2732,24 @@ void ProjectCanvas::selectByMarquee(Qt::KeyboardModifiers modifiers)
         }
         if (entry.screenBounds.intersects(marquee)
             && layerIntersectsRect(project_->layers[entry.layerIndex], marquee)) {
-            ids.insert(entry.layerId);
+            hitLeaves.insert(entry.layerId);
         }
+    }
+    // Touching any member of a group selects the whole group (matching click-select).
+    // In isolation mode this resolves only to a child of the isolated group.
+    if (state_ != nullptr) {
+        for (const QString &leaf : hitLeaves) {
+            const QString groupId = selectionGroupForEntry(leaf);
+            if (groupId.isEmpty()) {
+                ids.insert(leaf);
+            } else {
+                for (const QString &id : state_->leafLayerIdsForEntry(groupId)) {
+                    ids.insert(id);
+                }
+            }
+        }
+    } else {
+        ids += hitLeaves;
     }
     if (state_ != nullptr) {
         QSet<QString> guideIds;
@@ -2385,7 +2917,8 @@ void ProjectCanvas::paintGL()
     const bool flashActive = flashProgress.has_value() && !flashingLayerIds_.isEmpty();
     // Isolation dimming is not part of the section cache key, so bypass the cache while
     // isolated to avoid serving a non-dimmed frame.
-    const QString sectionCacheKey = (flashActive || isolationActive()) ? QString() : sectionCanvasCacheKey();
+    const QString sectionCacheKey = (flashActive || isolationActive() || !previewOpacity_.isEmpty())
+        ? QString() : sectionCanvasCacheKey();
     if (!sectionCacheKey.isEmpty()) {
         const auto cached = sectionCanvasCache_.constFind(sectionCacheKey);
         if (cached != sectionCanvasCache_.constEnd()) {
@@ -2406,7 +2939,7 @@ void ProjectCanvas::paintGL()
 
     painter.beginNativePainting();
     renderer_.render(*project_, geometry_, worldToScreen_, size(), flashingLayerIds_, selectionFlashHue(), selectionFlashStrength(), false,
-                     isolatedLeafIds_, isolationActive() ? 0.35f : 1.0f);
+                     isolatedLeafIds_, isolationActive() ? 0.35f : 1.0f, &previewOpacity_);
     painter.endNativePainting();
 
     if (!sectionCacheKey.isEmpty()) {
@@ -2442,6 +2975,63 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
     dragLastScreen_ = event->position();
     dragStartWorld_ = screenToWorld(dragStartScreen_);
     dragStartSelectionBounds_ = selectedScreenBounds();
+
+    if (eyedropperArmed_ && event->button() == Qt::LeftButton) {
+        eyedropperArmed_ = false;
+        QColor sampled;
+        // Sample the colour of the topmost visible shape under the cursor (locked and
+        // dimmed shapes included - the eyedropper reads anything you can see).
+        if (project_ != nullptr) {
+            for (const HitEntry &entry : hitEntries()) {
+                if (entry.layerIndex < 0 || entry.layerIndex >= static_cast<int>(project_->layers.size())) {
+                    continue;
+                }
+                if (entry.screenBounds.contains(event->position())
+                    && layerContainsScreenPoint(project_->layers[entry.layerIndex], event->position())) {
+                    const auto &c = project_->layers[entry.layerIndex].color;
+                    sampled = QColor(c[2], c[1], c[0], c[3]);
+                    break;
+                }
+            }
+        }
+        if (sampled.isValid() && eyedropperCallback_) {
+            eyedropperCallback_(sampled);
+        }
+        updateCursorForPoint(event->position());
+        update();
+        event->accept();
+        return;
+    }
+
+    if (rulersVisible_ && event->button() == Qt::LeftButton) {
+        const QPointF p = event->position();
+        const bool inTopRuler = p.y() < RulerThickness && p.x() >= RulerThickness;
+        const bool inLeftRuler = p.x() < RulerThickness && p.y() >= RulerThickness;
+        if (inTopRuler || inLeftRuler) {
+            // Drag out a new guide: the top ruler yields a horizontal line, the left a vertical.
+            draggingGuide_ = true;
+            activeGuideIndex_ = -1;
+            activeGuideHorizontal_ = inTopRuler;
+            const QPointF w = screenToWorld(p);
+            activeGuideWorldPos_ = inTopRuler ? w.y() : w.x();
+            setCursor(inTopRuler ? Qt::SizeVerCursor : Qt::SizeHorCursor);
+            update();
+            event->accept();
+            return;
+        }
+        const int gi = guideAtScreenPos(p);
+        if (gi >= 0) {
+            // Grab an existing guide to move (or drag onto a ruler to delete).
+            draggingGuide_ = true;
+            activeGuideIndex_ = gi;
+            activeGuideHorizontal_ = guideLines_[gi].horizontal;
+            activeGuideWorldPos_ = guideLines_[gi].worldPos;
+            setCursor(activeGuideHorizontal_ ? Qt::SizeVerCursor : Qt::SizeHorCursor);
+            update();
+            event->accept();
+            return;
+        }
+    }
 
     if (event->button() == Qt::MiddleButton || (event->button() == Qt::LeftButton && spaceDown_)) {
         dragMode_ = DragMode::Pan;
@@ -2672,6 +3262,16 @@ void ProjectCanvas::mousePressEvent(QMouseEvent *event)
 
 void ProjectCanvas::mouseMoveEvent(QMouseEvent *event)
 {
+    if (draggingGuide_) {
+        const QPointF w = screenToWorld(event->position());
+        activeGuideWorldPos_ = activeGuideHorizontal_ ? w.y() : w.x();
+        if (activeGuideIndex_ >= 0 && activeGuideIndex_ < guideLines_.size()) {
+            guideLines_[activeGuideIndex_].worldPos = activeGuideWorldPos_;
+        }
+        update();
+        event->accept();
+        return;
+    }
     if (dragMode_ == DragMode::Marquee) {
         updateCursorForPoint(event->position());
         const QRectF nextRect = QRectF(dragStartScreen_, event->position()).normalized();
@@ -2725,6 +3325,25 @@ void ProjectCanvas::mouseMoveEvent(QMouseEvent *event)
 
 void ProjectCanvas::mouseReleaseEvent(QMouseEvent *event)
 {
+    if (draggingGuide_) {
+        draggingGuide_ = false;
+        const QPointF p = event->position();
+        const bool overRuler = p.x() < RulerThickness || p.y() < RulerThickness;
+        if (activeGuideIndex_ < 0) {
+            // Creating a new guide: keep it only if dropped on the canvas.
+            if (!overRuler) {
+                guideLines_.push_back({activeGuideHorizontal_, activeGuideWorldPos_});
+            }
+        } else if (overRuler && activeGuideIndex_ < guideLines_.size()) {
+            // Dragging an existing guide onto a ruler removes it.
+            guideLines_.remove(activeGuideIndex_);
+        }
+        activeGuideIndex_ = -1;
+        updateCursorForPoint(p);
+        update();
+        event->accept();
+        return;
+    }
     // Marquee consumes its release before the shared view-transform refresh;
     // Select resolves click-selection when no drag is active. Both guard on
     // dragMode_, so a pan release still falls through to the pan block below.
@@ -2830,6 +3449,12 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
     }
     if (event->key() == Qt::Key_Escape) {
         cancelDrag();
+        if (eyedropperArmed_) {
+            eyedropperArmed_ = false;
+            updateCursorForPoint(mapFromGlobal(QCursor::pos()));
+            event->accept();
+            return;
+        }
         // Esc leaves isolation mode one level at a time before anything else.
         if (isolationActive()) {
             exitIsolation();
@@ -2853,6 +3478,32 @@ void ProjectCanvas::keyPressEvent(QKeyEvent *event)
         }
         event->accept();
         return;
+    }
+    if (event->key() == Qt::Key_I && !event->isAutoRepeat()
+        && !(event->modifiers() & (Qt::ControlModifier | Qt::AltModifier))) {
+        armEyedropper();
+        event->accept();
+        return;
+    }
+    if (event->key() == Qt::Key_Left || event->key() == Qt::Key_Right
+        || event->key() == Qt::Key_Up || event->key() == Qt::Key_Down) {
+        if (state_ != nullptr
+            && (!state_->selectedLayerIds().isEmpty() || !state_->selectedGuideLayerIds().isEmpty())) {
+            // Arrow nudges by 1 screen pixel, Shift+arrow by 10 (Illustrator-style).
+            const double step = (event->modifiers() & Qt::ShiftModifier) ? 10.0 : 1.0;
+            double dx = 0.0;
+            double dy = 0.0;
+            switch (event->key()) {
+            case Qt::Key_Left:  dx = -step; break;
+            case Qt::Key_Right: dx = step;  break;
+            case Qt::Key_Up:    dy = -step; break;
+            case Qt::Key_Down:  dy = step;  break;
+            default: break;
+            }
+            nudgeSelection(dx, dy);
+            event->accept();
+            return;
+        }
     }
     QOpenGLWidget::keyPressEvent(event);
 }

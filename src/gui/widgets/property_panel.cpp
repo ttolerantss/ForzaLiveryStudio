@@ -12,11 +12,13 @@
 #include <QDoubleSpinBox>
 #include <QFormLayout>
 #include <QHBoxLayout>
+#include <QIcon>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPixmap>
+#include <QPolygonF>
 #include <QPushButton>
 #include <QSignalBlocker>
 #include <QSizePolicy>
@@ -211,6 +213,25 @@ void applyDecomposedTransform(fh6::ShapeLayer *layer, const QTransform &result)
     layer->scaleX = dec.scaleX;
     layer->scaleY = dec.scaleY;
     layer->skew = dec.skew;
+}
+
+QIcon eyedropperIcon()
+{
+    QPixmap pm(18, 18);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(QColor(200, 200, 200), 1.6);
+    pen.setCapStyle(Qt::RoundCap);
+    p.setPen(pen);
+    p.drawLine(QPointF(4.8, 13.0), QPointF(11.5, 6.3));
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(200, 200, 200));
+    p.drawEllipse(QPointF(12.6, 5.2), 2.4, 2.4);
+    QPolygonF tip;
+    tip << QPointF(3.0, 14.6) << QPointF(5.6, 12.0) << QPointF(4.6, 11.0) << QPointF(2.0, 13.6);
+    p.drawPolygon(tip);
+    return QIcon(pm);
 }
 
 QString colorStyle(const std::array<quint8, 4> &color)
@@ -471,7 +492,24 @@ PropertyPanel::PropertyPanel(EditorState *state, QWidget *parent)
     layout->addRow(propertyLabel(this, QStringLiteral("Flip"), QStringLiteral("ToolbarScale.xpm")), flipRow);
 
     layout->addRow(dragLabel(QStringLiteral("Opacity"), QStringLiteral("PropertyVisible.xpm"), QStringLiteral("opacity"), opacity_), opacity_);
-    layout->addRow(propertyLabel(this, QStringLiteral("Color"), QStringLiteral("PropertyColor.xpm")), colorButton_);
+    auto *colorRow = new QWidget(this);
+    auto *colorRowLayout = new QHBoxLayout(colorRow);
+    colorRowLayout->setContentsMargins(0, 0, 0, 0);
+    colorRowLayout->setSpacing(4);
+    colorRowLayout->addWidget(colorButton_, 1);
+    auto *eyedropperButton = new QPushButton(colorRow);
+    eyedropperButton->setIcon(eyedropperIcon());
+    eyedropperButton->setIconSize(QSize(18, 18));
+    eyedropperButton->setFixedWidth(30);
+    eyedropperButton->setCursor(Qt::PointingHandCursor);
+    eyedropperButton->setToolTip(QStringLiteral("Eyedropper (I) - sample a colour from the canvas"));
+    connect(eyedropperButton, &QPushButton::clicked, this, [this]() {
+        if (eyedropperRequestedCallback_) {
+            eyedropperRequestedCallback_();
+        }
+    });
+    colorRowLayout->addWidget(eyedropperButton);
+    layout->addRow(propertyLabel(this, QStringLiteral("Color"), QStringLiteral("PropertyColor.xpm")), colorRow);
     layout->addRow(propertyLabel(this, QStringLiteral("Visible"), QStringLiteral("PropertyVisible.xpm")), visible_);
     layout->addRow(propertyLabel(this, QStringLiteral("Mask"), QStringLiteral("PropertyMask.xpm")), mask_);
     layout->addRow(propertyLabel(this, QStringLiteral("Locked"), QStringLiteral("PropertyLocked.xpm")), locked_);
