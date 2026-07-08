@@ -11,6 +11,7 @@
 #include <QCursor>
 #include <QDoubleSpinBox>
 #include <QFormLayout>
+#include <QGridLayout>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
@@ -231,6 +232,35 @@ QIcon eyedropperIcon()
     QPolygonF tip;
     tip << QPointF(3.0, 14.6) << QPointF(5.6, 12.0) << QPointF(4.6, 11.0) << QPointF(2.0, 13.6);
     p.drawPolygon(tip);
+    return QIcon(pm);
+}
+
+QIcon flipIcon(bool horizontal)
+{
+    QPixmap pm(18, 18);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    const QColor c(205, 205, 205);
+    p.setPen(QPen(c, 1, Qt::DashLine));
+    if (horizontal) {
+        p.drawLine(QPointF(9.0, 2.0), QPointF(9.0, 16.0));
+    } else {
+        p.drawLine(QPointF(2.0, 9.0), QPointF(16.0, 9.0));
+    }
+    p.setPen(Qt::NoPen);
+    p.setBrush(c);
+    QPolygonF a;
+    QPolygonF b;
+    if (horizontal) {
+        a << QPointF(3.0, 4.0) << QPointF(3.0, 14.0) << QPointF(7.5, 9.0);
+        b << QPointF(15.0, 4.0) << QPointF(15.0, 14.0) << QPointF(10.5, 9.0);
+    } else {
+        a << QPointF(4.0, 3.0) << QPointF(14.0, 3.0) << QPointF(9.0, 7.5);
+        b << QPointF(4.0, 15.0) << QPointF(14.0, 15.0) << QPointF(9.0, 10.5);
+    }
+    p.drawPolygon(a);
+    p.drawPolygon(b);
     return QIcon(pm);
 }
 
@@ -467,29 +497,68 @@ PropertyPanel::PropertyPanel(EditorState *state, QWidget *parent)
 
     layout->addRow(propertyLabel(this, QStringLiteral("Name"), QStringLiteral("PropertyName.xpm")), name_);
     layout->addRow(propertyLabel(this, QStringLiteral("Shape ID"), QStringLiteral("PropertyShapeID.xpm")), shapeId_);
-    layout->addRow(dragLabel(QStringLiteral("Position X"), QStringLiteral("PropertyXY.xpm"), QStringLiteral("x"), x_), x_);
-    layout->addRow(dragLabel(QStringLiteral("Position Y"), QStringLiteral("PropertyXY.xpm"), QStringLiteral("y"), y_), y_);
-    layout->addRow(dragLabel(QStringLiteral("Scale X"), QStringLiteral("ToolbarScale.xpm"), QStringLiteral("scaleX"), scaleX_), scaleX_);
-    layout->addRow(dragLabel(QStringLiteral("Scale Y"), QStringLiteral("ToolbarScale.xpm"), QStringLiteral("scaleY"), scaleY_), scaleY_);
-    layout->addRow(dragLabel(QStringLiteral("Rotation"), QStringLiteral("ToolbarRotate.xpm"), QStringLiteral("rotation"), rotation_), rotation_);
-    layout->addRow(dragLabel(QStringLiteral("Skew"), QStringLiteral("ToolbarSkew.xpm"), QStringLiteral("skew"), skew_), skew_);
+    // Compact Illustrator-style transform block: position X/Y on the left, scale on the
+    // right (in the W/H slots), then a rotation field and flip buttons on one row.
+    for (QDoubleSpinBox *box : {x_, y_, scaleX_, scaleY_, rotation_, skew_}) {
+        box->setMinimumWidth(52);
+        box->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    }
+    rotation_->setSuffix(QString(QChar(0x00B0)));
+    auto *transformBlock = new QWidget(this);
+    auto *tg = new QGridLayout(transformBlock);
+    tg->setContentsMargins(0, 0, 0, 0);
+    tg->setHorizontalSpacing(6);
+    tg->setVerticalSpacing(4);
+    tg->addWidget(dragLabel(QStringLiteral("X"), QStringLiteral("PropertyXY.xpm"), QStringLiteral("x"), x_), 0, 0);
+    tg->addWidget(x_, 0, 1);
+    tg->addWidget(dragLabel(QStringLiteral("W"), QStringLiteral("ToolbarScale.xpm"), QStringLiteral("scaleX"), scaleX_), 0, 2);
+    tg->addWidget(scaleX_, 0, 3);
+    tg->addWidget(dragLabel(QStringLiteral("Y"), QStringLiteral("PropertyXY.xpm"), QStringLiteral("y"), y_), 1, 0);
+    tg->addWidget(y_, 1, 1);
+    tg->addWidget(dragLabel(QStringLiteral("H"), QStringLiteral("ToolbarScale.xpm"), QStringLiteral("scaleY"), scaleY_), 1, 2);
+    tg->addWidget(scaleY_, 1, 3);
+    tg->addWidget(dragLabel(QStringLiteral("Rotate"), QStringLiteral("ToolbarRotate.xpm"), QStringLiteral("rotation"), rotation_), 2, 0);
+    tg->addWidget(rotation_, 2, 1);
 
-    // Flip buttons (mirror the selection about its centre), Illustrator-style.
-    auto *flipRow = new QWidget(this);
+    auto *flipRow = new QWidget(transformBlock);
     auto *flipLayout = new QHBoxLayout(flipRow);
     flipLayout->setContentsMargins(0, 0, 0, 0);
-    flipLayout->setSpacing(6);
-    auto *flipHButton = new QPushButton(QStringLiteral("Flip Horizontal"), flipRow);
-    flipHButton->setToolTip(QStringLiteral("Flip the selection horizontally"));
-    flipHButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-    auto *flipVButton = new QPushButton(QStringLiteral("Flip Vertical"), flipRow);
-    flipVButton->setToolTip(QStringLiteral("Flip the selection vertically"));
-    flipVButton->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    flipLayout->setSpacing(5);
+    flipLayout->addStretch(1);
+    auto *flipLabel = new QLabel(QStringLiteral("Flip"), flipRow);
+    flipLabel->setStyleSheet(QStringLiteral("color: #9a9a9a;"));
+    flipLayout->addWidget(flipLabel);
+    // Free-standing icons (no button chrome), with a subtle hover.
+    const QString flatButton = QStringLiteral(
+        "QPushButton { border: none; background: transparent; padding: 0; }"
+        "QPushButton:hover { background: #3a3a3a; border-radius: 4px; }");
+    auto *flipHButton = new QPushButton(flipRow);
+    flipHButton->setIcon(flipIcon(true));
+    flipHButton->setIconSize(QSize(18, 18));
+    flipHButton->setFixedSize(24, 22);
+    flipHButton->setFlat(true);
+    flipHButton->setStyleSheet(flatButton);
+    flipHButton->setCursor(Qt::PointingHandCursor);
+    flipHButton->setToolTip(QStringLiteral("Flip Horizontal"));
+    auto *flipVButton = new QPushButton(flipRow);
+    flipVButton->setIcon(flipIcon(false));
+    flipVButton->setIconSize(QSize(18, 18));
+    flipVButton->setFixedSize(24, 22);
+    flipVButton->setFlat(true);
+    flipVButton->setStyleSheet(flatButton);
+    flipVButton->setCursor(Qt::PointingHandCursor);
+    flipVButton->setToolTip(QStringLiteral("Flip Vertical"));
     flipLayout->addWidget(flipHButton);
     flipLayout->addWidget(flipVButton);
     connect(flipHButton, &QPushButton::clicked, this, [this]() { if (flipCallback_) { flipCallback_(true); } });
     connect(flipVButton, &QPushButton::clicked, this, [this]() { if (flipCallback_) { flipCallback_(false); } });
-    layout->addRow(propertyLabel(this, QStringLiteral("Flip"), QStringLiteral("ToolbarScale.xpm")), flipRow);
+    tg->addWidget(flipRow, 2, 2, 1, 2);
+
+    tg->addWidget(dragLabel(QStringLiteral("Skew"), QStringLiteral("ToolbarSkew.xpm"), QStringLiteral("skew"), skew_), 3, 0);
+    tg->addWidget(skew_, 3, 1);
+    tg->setColumnStretch(1, 1);
+    tg->setColumnStretch(3, 1);
+    layout->addRow(transformBlock);
 
     layout->addRow(dragLabel(QStringLiteral("Opacity"), QStringLiteral("PropertyVisible.xpm"), QStringLiteral("opacity"), opacity_), opacity_);
     auto *colorRow = new QWidget(this);

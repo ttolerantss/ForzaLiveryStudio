@@ -5,3 +5,5 @@ tests/
 # Machine-local build helpers (aqt Qt + local zlib instead of vcpkg)
 tools/build-local.ps1
 tools/run-local.ps1
+
+crashdumps/

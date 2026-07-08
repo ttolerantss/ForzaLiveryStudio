@@ -10,9 +10,13 @@
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QLabel>
+#include <QMainWindow>
+#include <QMouseEvent>
 #include <QObject>
 #include <QSplitter>
 #include <QStyle>
+#include <QTabBar>
+#include <QTimer>
 #include <QToolButton>
 #include <QVariant>
 #include <QWidget>
@@ -23,6 +27,143 @@ namespace {
 constexpr const char *DockIconNameProperty = "fh6DockIconName";
 constexpr const char *DockIconLabelProperty = "fh6DockIconLabel";
 constexpr const char *DockTitleLayoutProperty = "fh6DockTitleLayout";
+constexpr const char *DockCollapsedProperty = "fh6DockCollapsed";
+constexpr const char *DockExpandedHeightProperty = "fh6DockExpandedHeight";
+
+// QMainWindow re-shows a tab group's QTabBar on every relayout, so a one-off hide()
+// doesn't stick. This guard re-hides any tab bar flagged fh6ForceHidden whenever it is
+// shown again, keeping a collapsed tab group down to its single title line.
+class TabBarCollapseGuard final : public QObject {
+public:
+    using QObject::QObject;
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if ((event->type() == QEvent::Show || event->type() == QEvent::ShowToParent)
+            && watched->property("fh6ForceHidden").toBool()) {
+            if (auto *widget = qobject_cast<QWidget *>(watched)) {
+                QTimer::singleShot(0, widget, [widget]() {
+                    if (widget->property("fh6ForceHidden").toBool()) {
+                        widget->hide();
+                    }
+                });
+            }
+        }
+        return QObject::eventFilter(watched, event);
+    }
+};
+
+TabBarCollapseGuard *tabBarCollapseGuard()
+{
+    static TabBarCollapseGuard guard;
+    return &guard;
+}
+
+// The docks a title action should treat as one unit: the dock itself plus any docks
+// tabbed together with it.
+QList<QDockWidget *> dockGroup(QDockWidget *dock)
+{
+    QList<QDockWidget *> group{dock};
+    if (auto *mainWindow = qobject_cast<QMainWindow *>(dock->parentWidget())) {
+        for (QDockWidget *sibling : mainWindow->tabifiedDockWidgets(dock)) {
+            if (sibling != nullptr && !group.contains(sibling)) {
+                group.append(sibling);
+            }
+        }
+    }
+    return group;
+}
+
+// Collapse a dock to just its title bar (or restore it). Double-click the title. Tabbed
+// docks collapse together, and only the height shrinks - the width is preserved.
+void toggleDockTitleCollapsed(QDockWidget *dock)
+{
+    if (dock == nullptr || dock->widget() == nullptr || dock->titleBarWidget() == nullptr) {
+        return;
+    }
+    const bool collapse = !dock->property(DockCollapsedProperty).toBool();
+    const QList<QDockWidget *> group = dockGroup(dock);
+    for (QDockWidget *member : group) {
+        if (member->widget() == nullptr || member->titleBarWidget() == nullptr) {
+            continue;
+        }
+        if (collapse) {
+            member->setProperty(DockExpandedHeightProperty, member->height());
+            // Pin the dock's width so hiding the content can't shrink it - only the
+            // height collapses, and the title/divider keep spanning the full width.
+            member->setMinimumWidth(member->width());
+            member->widget()->hide();
+            member->setMaximumHeight(member->titleBarWidget()->sizeHint().height());
+            member->setProperty(DockCollapsedProperty, true);
+        } else {
+            member->widget()->show();
+            member->setMaximumHeight(QWIDGETSIZE_MAX);
+            member->setMinimumWidth(0);
+            member->setProperty(DockCollapsedProperty, false);
+        }
+    }
+    // Hide (or show) the tab bar for a collapsed tab group so the sub-tabs disappear
+    // when it's reduced to a single title line.
+    if (group.size() > 1) {
+        if (auto *mainWindow = qobject_cast<QMainWindow *>(dock->parentWidget())) {
+            QSet<QString> titles;
+            for (QDockWidget *member : group) {
+                titles.insert(member->windowTitle());
+            }
+            for (QTabBar *tabBar : mainWindow->findChildren<QTabBar *>()) {
+                bool belongs = false;
+                for (int i = 0; i < tabBar->count(); ++i) {
+                    if (titles.contains(tabBar->tabText(i))) {
+                        belongs = true;
+                        break;
+                    }
+                }
+                if (!belongs) {
+                    continue;
+                }
+                if (!tabBar->property("fh6GuardInstalled").toBool()) {
+                    tabBar->installEventFilter(tabBarCollapseGuard());
+                    tabBar->setProperty("fh6GuardInstalled", true);
+                }
+                tabBar->setProperty("fh6ForceHidden", collapse);
+                tabBar->setVisible(!collapse);
+            }
+        }
+    }
+    if (!collapse) {
+        const int expandedHeight = dock->property(DockExpandedHeightProperty).toInt();
+        if (expandedHeight > 0 && !dock->isFloating()) {
+            if (auto *mainWindow = qobject_cast<QMainWindow *>(dock->parentWidget())) {
+                mainWindow->resizeDocks({dock}, {expandedHeight}, Qt::Vertical);
+            }
+        }
+    }
+}
+
+// Double-clicking the title bar (not a button) toggles the collapse.
+class DockTitleCollapseFilter final : public QObject {
+public:
+    DockTitleCollapseFilter(QDockWidget *dock, QObject *parent)
+        : QObject(parent)
+        , dock_(dock)
+    {
+    }
+
+protected:
+    bool eventFilter(QObject *watched, QEvent *event) override
+    {
+        if (event->type() == QEvent::MouseButtonDblClick
+            && static_cast<QMouseEvent *>(event)->button() == Qt::LeftButton) {
+            toggleDockTitleCollapsed(dock_);
+            return true;
+        }
+        return QObject::eventFilter(watched, event);
+    }
+
+private:
+    QDockWidget *dock_ = nullptr;
+};
 
 } // namespace
 
@@ -86,9 +227,17 @@ void setDockTitleIcon(QDockWidget *dock, const QString &iconName)
     closeButton->setFixedSize(18, 18);
     closeButton->setIcon(dock->style()->standardIcon(QStyle::SP_TitleBarCloseButton));
     closeButton->setToolTip(QStringLiteral("Close"));
-    QObject::connect(closeButton, &QToolButton::clicked, dock, &QDockWidget::hide);
+    QObject::connect(closeButton, &QToolButton::clicked, dock, [dock]() {
+        // Closing one dock in a tab group closes the whole group.
+        for (QDockWidget *member : dockGroup(dock)) {
+            member->hide();
+        }
+    });
     layout->addWidget(closeButton);
 
+    auto *collapseFilter = new DockTitleCollapseFilter(dock, titleBar);
+    titleBar->installEventFilter(collapseFilter);
+    row->installEventFilter(collapseFilter);
     dock->setTitleBarWidget(titleBar);
 }
 

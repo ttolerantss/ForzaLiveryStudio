@@ -2821,6 +2821,10 @@ QImage ProjectCanvas::guideImage(const fh6::GuideLayer &guide) const
     }
     if (!image.isNull()) {
         image = image.convertToFormat(QImage::Format_ARGB32_Premultiplied);
+        // The canvas maps world Y upward while the raster's rows run top-down, so the
+        // Y-flip in worldToScreen would otherwise draw the guide upside down. Pre-flip
+        // the (cached, display-only) image to compensate.
+        image = image.flipped(Qt::Vertical);
     }
     guideImageCache_.insert(cacheKey, image);
     return image;

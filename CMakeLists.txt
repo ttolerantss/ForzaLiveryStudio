@@ -138,6 +138,14 @@ set_target_properties(${FORZA_LIVERY_STUDIO_TARGET} PROPERTIES
     WIN32_EXECUTABLE TRUE
 )
 
+# Emit debug symbols (PDB) and a linker map even in Release so crash dumps can be
+# symbolised. Optimisation is unchanged (/OPT:REF,ICF re-added since /DEBUG drops them).
+if(MSVC)
+    target_compile_options(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE $<$<CONFIG:Release>:/Zi>)
+    target_link_options(${FORZA_LIVERY_STUDIO_TARGET} PRIVATE
+        $<$<CONFIG:Release>:/DEBUG> $<$<CONFIG:Release>:/MAP> $<$<CONFIG:Release>:/OPT:REF> $<$<CONFIG:Release>:/OPT:ICF>)
+endif()
+
 set(FH6_GUI_ASSETS
     Cursor.xpm
     MenuCopy.xpm
